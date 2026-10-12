@@ -1120,6 +1120,147 @@ static studiohdr_t *Mod_MaybeTruncateStudioTextureData( model_t *mod )
 
 /*
 =================
+Mod_StudioSectionFits
+
+check that count elements of elemsize bytes at offset lie inside the file.
+division is used instead of multiplication so garbage counts can't wrap around
+=================
+*/
+static qboolean Mod_StudioSectionFits( size_t size, int32_t offset, int32_t count, size_t elemsize )
+{
+	size_t	start;
+
+	if( count <= 0 )
+		return true; // nothing will be walked
+
+	if( offset < 0 || !elemsize )
+		return false;
+
+	start = (size_t)offset;
+
+	if( start > size )
+		return false;
+
+	if( (size_t)count > ( size - start ) / elemsize )
+		return false;
+
+	return true;
+}
+
+/*
+=================
+Mod_StudioLayoutFits
+
+sanity check for headers that claim a bogus length while the file itself is
+smaller: every table the loader and the renderer walk must still lie inside
+the real file size, and the counts that feed fixed-size engine arrays can't
+exceed the engine limits (the renderer doesn't clamp them). used to decide
+whether such a model can be rescued by clamping the length to the real file
+size or has to load as a bad (invisible) model
+=================
+*/
+static qboolean Mod_StudioLayoutFits( const studiohdr_t *phdr, size_t size )
+{
+	int	i;
+
+	// gl renderer keeps per-bone transforms in fixed arrays, the rest are sanity caps
+	if( phdr->numbones > MAXSTUDIOBONES )
+		return false;
+	if( phdr->numbonecontrollers < 0 || phdr->numbonecontrollers > 512 )
+		return false;
+	if( phdr->numhitboxes < 0 || phdr->numhitboxes > 512 )
+		return false;
+	if( phdr->numseq < 0 || phdr->numseq > 1024 )
+		return false;
+	if( phdr->numseqgroups < 0 || phdr->numseqgroups > 128 )
+		return false;
+	if( phdr->numtextures < 0 || phdr->numtextures > 1024 )
+		return false;
+	if( phdr->numbodyparts < 0 || phdr->numbodyparts > 64 )
+		return false;
+	if( phdr->numattachments < 0 || phdr->numattachments > MAXSTUDIOATTACHMENTS )
+		return false;
+	if( phdr->numskinref < 0 || phdr->numskinfamilies < 0 )
+		return false;
+
+	if( !Mod_StudioSectionFits( size, phdr->boneindex, phdr->numbones, sizeof( mstudiobone_t )))
+		return false;
+
+	if( phdr->flags & STUDIO_HAS_BONEINFO )
+	{
+		// xash extension: boneinfo block is stored right behind the bone table
+		if( !Mod_StudioSectionFits( size, phdr->boneindex + phdr->numbones * (int32_t)sizeof( mstudiobone_t ), phdr->numbones, sizeof( mstudioboneinfo_t )))
+			return false;
+	}
+
+	if( !Mod_StudioSectionFits( size, phdr->bonecontrollerindex, phdr->numbonecontrollers, sizeof( mstudiobonecontroller_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->hitboxindex, phdr->numhitboxes, sizeof( mstudiobbox_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->seqindex, phdr->numseq, sizeof( mstudioseqdesc_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->seqgroupindex, phdr->numseqgroups, sizeof( mstudioseqgroup_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->textureindex, phdr->numtextures, sizeof( mstudiotexture_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->bodypartindex, phdr->numbodyparts, sizeof( mstudiobodyparts_t )))
+		return false;
+	if( !Mod_StudioSectionFits( size, phdr->attachmentindex, phdr->numattachments, sizeof( mstudioattachment_t )))
+		return false;
+
+	if( phdr->studiohdr2index > 0 && !Mod_StudioSectionFits( size, phdr->studiohdr2index, 1, sizeof( studiohdr2_t )))
+		return false;
+
+	if( phdr->texturedataindex > 0 && (size_t)phdr->texturedataindex > size )
+		return false;
+
+	if( phdr->numskinref > 0 && phdr->numskinfamilies > 0 )
+	{
+		size_t	start, familybytes;
+
+		// skin lookup table: numskinfamilies rows of numskinref shorts
+		if( !Mod_StudioSectionFits( size, phdr->skinindex, phdr->numskinref, sizeof( short )))
+			return false;
+
+		start = (size_t)phdr->skinindex;
+		familybytes = (size_t)phdr->numskinref * sizeof( short );
+		if( (size_t)phdr->numskinfamilies > ( size - start ) / familybytes )
+			return false;
+	}
+
+	// walk the bodypart chain: per-model vertex/normal tables and meshes
+	for( i = 0; i < phdr->numbodyparts; i++ )
+	{
+		const mstudiobodyparts_t	*pbodypart = (const mstudiobodyparts_t *)((const byte *)phdr + phdr->bodypartindex ) + i;
+		int				j;
+
+		if( !Mod_StudioSectionFits( size, pbodypart->modelindex, pbodypart->nummodels, sizeof( mstudiomodel_t )))
+			return false;
+
+		for( j = 0; j < pbodypart->nummodels; j++ )
+		{
+			const mstudiomodel_t	*pmodel = (const mstudiomodel_t *)((const byte *)phdr + pbodypart->modelindex ) + j;
+
+			if( pmodel->numverts > MAXSTUDIOVERTS || pmodel->numnorms > MAXSTUDIOVERTS )
+				return false;
+			if( !Mod_StudioSectionFits( size, pmodel->vertinfoindex, pmodel->numverts, sizeof( byte )))
+				return false;
+			if( !Mod_StudioSectionFits( size, pmodel->norminfoindex, pmodel->numnorms, sizeof( byte )))
+				return false;
+			if( !Mod_StudioSectionFits( size, pmodel->vertindex, pmodel->numverts, sizeof( vec3_t )))
+				return false;
+			if( !Mod_StudioSectionFits( size, pmodel->normindex, pmodel->numnorms, sizeof( vec3_t )))
+				return false;
+			if( !Mod_StudioSectionFits( size, pmodel->meshindex, pmodel->nummesh, sizeof( mstudiomesh_t )))
+				return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+=================
 Mod_LoadStudioModel
 =================
 */
@@ -1136,13 +1277,29 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	mod->type = mod_studio;
 
 	phdr = R_StudioLoadHeader( mod, buffer, buffersize );
-	// garbage value in length. also reject lengths larger than the loaded
-	// file: the length sizes the in-memory copy below (and the read from
-	// the file buffer), so a malformed header value would either request a
-	// multi-gigabyte allocation (fatal on this platform) or read past the
-	// buffer. such a model loads as a bad model instead of killing the host.
-	if( !phdr || phdr->length < sizeof( studiohdr_t ) || phdr->length > buffersize )
+	if( !phdr )
 		return;	// bad model
+
+	// reject lengths smaller than the header itself (also catches negative garbage)
+	if( phdr->length < (int)sizeof( studiohdr_t ))
+		return;	// bad model
+
+	// don't trust lengths larger than the loaded file: the length sizes the
+	// in-memory copy below (and the read from the file buffer), so a malformed
+	// header value would either request a multi-gigabyte allocation (fatal on
+	// this platform) or read past the buffer. some converted models ship a
+	// bogus length field while the file itself is complete, so first try to
+	// trust the real file size and load the model anyway; only headers whose
+	// tables don't fit the file load as a bad model instead of killing the host
+	if( (size_t)phdr->length > buffersize )
+	{
+		if( !Mod_StudioLayoutFits( phdr, buffersize ))
+			return;	// truncated or garbage model
+
+		Con_Printf( S_WARN "%s: bad studio header length %d, clamping to file size %d\n",
+			mod->name, phdr->length, (int)buffersize );
+		phdr->length = (int)buffersize;
+	}
 
 #if !XASH_DEDICATED
 	if( !Host_IsDedicated( ) && phdr->numtextures == 0 )
@@ -1153,6 +1310,14 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 
 		buffer2 = FS_LoadFile( Mod_StudioTexName( mod->name ), &size2_len, false );
 		thdr = R_StudioLoadHeader( mod, buffer2, size2_len );
+
+		// the merge below trusts this header as well: a malformed T.mdl must
+		// not request a huge allocation or read past its file buffer
+		if( thdr != NULL && ( size2_len <= 0 || (size_t)thdr->length > (size_t)size2_len || !Mod_StudioLayoutFits( thdr, (size_t)size2_len )))
+		{
+			Con_Printf( S_WARN "%s: %s has malformed header, ignoring it\n", __func__, mod->name );
+			thdr = NULL;
+		}
 
 		if( thdr != NULL )
 		{
