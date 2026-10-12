@@ -1136,7 +1136,12 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	mod->type = mod_studio;
 
 	phdr = R_StudioLoadHeader( mod, buffer, buffersize );
-	if( !phdr || phdr->length < sizeof( studiohdr_t )) // garbage value in length
+	// garbage value in length. also reject lengths larger than the loaded
+	// file: the length sizes the in-memory copy below (and the read from
+	// the file buffer), so a malformed header value would either request a
+	// multi-gigabyte allocation (fatal on this platform) or read past the
+	// buffer. such a model loads as a bad model instead of killing the host.
+	if( !phdr || phdr->length < sizeof( studiohdr_t ) || phdr->length > buffersize )
 		return;	// bad model
 
 #if !XASH_DEDICATED
