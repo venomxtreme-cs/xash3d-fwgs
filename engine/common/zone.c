@@ -200,36 +200,48 @@ static const char *Mem_CheckFilename( const char *filename )
 	return "<corrupted>";
 }
 
-static qboolean Mem_CheckAllocHeaderBig( const char *func, const memheader_t *mem, const char *filename, int fileline )
+// walkpool: name of the pool whose chain the block was reached through during a
+// scan (NULL when the block is being freed/reallocated directly). reports it so
+// a corrupted chain entry can be attributed to the pool that owns it even when
+// the header's own poolptr field is already trashed
+static qboolean Mem_CheckAllocHeaderBig( const char *func, const memheader_t *mem, const char *filename, int fileline, const char *walkpool )
 {
 	if( mem->sentinel1 != MEMHEADER_SENTINEL_BIG )
 	{
 		const char *memfilename = Mem_CheckFilename( mem->filename );
-		Sys_Error( "%s: trashed header sentinel 1 (alloc at %s:%i, check at %s:%i)\n", func, memfilename, mem->fileline, filename, fileline );
+		Sys_Error( "%s: trashed header sentinel 1 (alloc at %s:%i, check at %s:%i, found in pool \"%s\", header: %p next %p prev %p size %zu poolptr %u)\n",
+			func, memfilename, mem->fileline, filename, fileline, walkpool ? walkpool : "<n/a>",
+			(const void *)mem, (const void *)mem->next, (const void *)mem->prev, mem->size, (uint)mem->poolptr );
 		return false;
 	}
 
 	if( *((const byte *)mem + sizeof( memheader_t ) + mem->size ) != MEMHEADER_SENTINEL2 )
 	{
 		const char *memfilename = Mem_CheckFilename( mem->filename );
-		Sys_Error( "%s: trashed header sentinel 2 (alloc at %s:%i, check at %s:%i)\n", func, memfilename, mem->fileline, filename, fileline );
+		Sys_Error( "%s: trashed header sentinel 2 (alloc at %s:%i, check at %s:%i, found in pool \"%s\", header: %p next %p prev %p size %zu poolptr %u)\n",
+			func, memfilename, mem->fileline, filename, fileline, walkpool ? walkpool : "<n/a>",
+			(const void *)mem, (const void *)mem->next, (const void *)mem->prev, mem->size, (uint)mem->poolptr );
 		return false;
 	}
 
 	return true;
 }
 
-static qboolean Mem_CheckAllocHeaderSmall( const char *func, const memheader_small_t *mem, const char *filename, int fileline )
+static qboolean Mem_CheckAllocHeaderSmall( const char *func, const memheader_small_t *mem, const char *filename, int fileline, const char *walkpool )
 {
 	if( mem->sentinel1 != MEMHEADER_SENTINEL_SMALL )
 	{
-		Sys_Error( "%s: trashed small header sentinel 1 (pool \"%s\", check at %s:%i)\n", func, Mem_PoolName( mem->poolptr ), filename, fileline );
+		Sys_Error( "%s: trashed small header sentinel 1 (pool \"%s\", check at %s:%i, found in pool \"%s\", header: %p next %p prev %p size %u poolptr %u)\n",
+			func, Mem_PoolName( mem->poolptr ), filename, fileline, walkpool ? walkpool : "<n/a>",
+			(const void *)mem, (const void *)mem->next, (const void *)mem->prev, (uint)mem->size, (uint)mem->poolptr );
 		return false;
 	}
 
 	if( *((const byte *)mem + sizeof( memheader_small_t ) + mem->size ) != MEMHEADER_SENTINEL2 )
 	{
-		Sys_Error( "%s: trashed small header sentinel 2 (pool \"%s\", check at %s:%i)\n", func, Mem_PoolName( mem->poolptr ), filename, fileline );
+		Sys_Error( "%s: trashed small header sentinel 2 (pool \"%s\", check at %s:%i, found in pool \"%s\", header: %p next %p prev %p size %u poolptr %u)\n",
+			func, Mem_PoolName( mem->poolptr ), filename, fileline, walkpool ? walkpool : "<n/a>",
+			(const void *)mem, (const void *)mem->next, (const void *)mem->prev, (uint)mem->size, (uint)mem->poolptr );
 		return false;
 	}
 
@@ -295,7 +307,7 @@ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char 
 
 static void Mem_FreeBlockBig( memheader_t *mem, const char *filename, int fileline )
 {
-	if( !Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline ))
+	if( !Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline, NULL ))
 		return;
 
 	mempool_t *pool = Mem_FindPool( mem->poolptr );
@@ -316,7 +328,7 @@ static void Mem_FreeBlockBig( memheader_t *mem, const char *filename, int fileli
 
 static void Mem_FreeBlockSmall( memheader_small_t *mem, const char *filename, int fileline )
 {
-	if( !Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline ))
+	if( !Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline, NULL ))
 		return;
 
 	mempool_t *pool = Mem_FindPool( mem->poolptr );
@@ -392,7 +404,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
 	{
 		memheader_small_t *mem = (memheader_small_t *)((byte *)data - sizeof( memheader_small_t ));
 
-		if( !Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline ))
+		if( !Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline, NULL ))
 			return NULL;
 
 		size_t oldsize = mem->size;
@@ -452,7 +464,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
 	{
 		memheader_t *mem = (memheader_t *)((byte *)data - sizeof( memheader_t ));
 
-		if( !Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline ))
+		if( !Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline, NULL ))
 			return NULL;
 
 		if( mem->poolptr != poolptr )
@@ -618,10 +630,10 @@ void _Mem_Check( const char *filename, int fileline )
 		mempool_t *pool = &poolchain[i];
 
 		for( memheader_t *mem = pool->chain; mem; mem = mem->next )
-			Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline );
+			Mem_CheckAllocHeaderBig( __func__, mem, filename, fileline, pool->name );
 
 		for( memheader_small_t *mem = pool->chain_small; mem; mem = mem->next )
-			Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline );
+			Mem_CheckAllocHeaderSmall( __func__, mem, filename, fileline, pool->name );
 	}
 }
 

@@ -428,6 +428,12 @@ void CL_SignonReply( connprotocol_t proto )
 	{
 	case 1:
 		CL_ServerCommand( true, proto == PROTO_GOLDSRC ? "sendents" : "begin" );
+		// validate every pool on each signon: heap corruption introduced while
+		// loading the map (malformed assets, overrun writes) is reported right
+		// here with the corrupted block's pool and contents instead of
+		// surfacing later as a random crash mid-round. costs a single walk of
+		// the pool chains per level change
+		Mem_Check();
 		if( host_developer.value >= DEV_EXTENDED )
 			Mem_PrintStats();
 		break;
