@@ -12,7 +12,6 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
-import android.view.DisplayCutout;
 import android.view.WindowManager;
 
 import org.libsdl.app.SDLActivity;
@@ -60,23 +59,9 @@ public class XashActivity extends SDLActivity {
 	}
 
 	private void updateWindowInsets(View surface, WindowInsets insets) {
-		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P)
-			return;
-
-		if (insets == null || surface.getWidth() <= 0 || surface.getHeight() <= 0)
-			return;
-
-		// Only the display cutout: system bars are hidden in immersive mode and reporting them while they're swiped in would shift the whole layout.
-		int left = 0, top = 0, right = 0, bottom = 0;
-		DisplayCutout cutout = insets.getDisplayCutout();
-		if (cutout != null) {
-			left = cutout.getSafeInsetLeft();
-			top = cutout.getSafeInsetTop();
-			right = cutout.getSafeInsetRight();
-			bottom = cutout.getSafeInsetBottom();
-		}
-		float width = surface.getWidth(), height = surface.getHeight();
-		mWindowInsets = new float[] { left / width, top / height, right / width, bottom / height };
+		// Full screen: always report zero safe-area insets so the menu, console and
+		// touch controls span the entire display and ignore the punch-hole cutout.
+		mWindowInsets = new float[] { 0f, 0f, 0f, 0f };
 	}
 
 	@Override
