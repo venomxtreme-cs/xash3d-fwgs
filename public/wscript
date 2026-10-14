@@ -63,6 +63,13 @@ def simple_check(conf, fragment, msg, mandatory=False, **kw):
 
 @Configure.conf
 def get_git_commit_date(conf):
+	import os
+	# local build glue: honor XASH_BUILD_COMMIT_DATE for a deterministic
+	# engine buildnum (cs16-client enforces a minimum buildnum floor)
+	override = os.environ.get('XASH_BUILD_COMMIT_DATE')
+	if override:
+		return override + ' 00:00:00 +0000'
+
 	node = conf.srcnode.find_node('.git')
 
 	if not node:
