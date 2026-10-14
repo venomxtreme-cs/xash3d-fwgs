@@ -2507,10 +2507,46 @@ static qboolean SV_RewriteMessage( void )
 
 /*
 =============
+SV_GamedllSvcAllowed
+
+the system svc ids the game dll / metamod / mod plugins may legally
+send raw through MESSAGE_BEGIN. Everything else <= svc_lastmsg is vetoed
+in pfnMessageBegin and rerouted into a harmless usermsg, because our
+modern-protocol client Host_Error's on any reserved id (GoldSrc mods
+hardcode ids like svc_spawnstaticsound=29 that our protocol reserved).
+=============
+*/
+static qboolean SV_GamedllSvcAllowed( int msg_num )
+{
+	switch( msg_num )
+	{
+	// classic gamedll surface, kept for compatibility:
+	case svc_temp_entity:	// TE_* effects
+	case svc_centerprint:	// centerprint / text menus
+	case svc_intermission:
+	case svc_finale:
+	case svc_cdtrack:
+	case svc_restore:
+	case svc_cutscene:
+	case svc_weaponanim:	// GoldSrc-brained mods send it raw
+	case svc_bspdecal:		// GoldSrc name: svc_decalname
+	case svc_roomtype:
+	case svc_addangle:
+	case svc_director:		// HLTV/director messages
+	case svc_hltv:
+		return true;
+	}
+	return false;
+}
+
+/*
+=============
 pfnMessageBegin
 
 =============
 */
+static int GAME_EXPORT pfnRegUserMsg( const char *pszName, int iSize );
+
 static void GAME_EXPORT pfnMessageBegin( int msg_dest, int msg_num, const float *pOrigin, edict_t *ed )
 {
 	int	iSize;
@@ -2521,6 +2557,30 @@ static void GAME_EXPORT pfnMessageBegin( int msg_dest, int msg_num, const float 
 
 	// check range
 	msg_num = bound( svc_bad, msg_num, 255 );
+
+	// reserved current-protocol svc ids 27/28/29 are GoldSrc-only
+	// (killedmonster/foundsecret/spawnstaticsound -- our svc table keeps
+	// them reserved). A gamedll or mod sending them raw used to reach
+	// the wire and kill our client with
+	// "CL_ParseUserMessage: illegible server message 29" -- the exact
+	// crash the Zombie: The Hero mod report captured on device. Reroute
+	// the send into a lazily-registered variable-size user message: the
+	// client gets its reg link, parses the payload and skips it, the
+	// game keeps running and the console names the offender.
+	// generalize the veto to EVERY system svc the gamedll layer is not
+	// allowed to send raw (GoldSrc-brained mods hardcode arbitrary svc ids
+	// like 27/28/29; any of them on the wire kills our modern-protocol
+	// client). Only the classic gamedll-visible svcs stay whitelisted; the
+	// offender is named on the console.
+	if( msg_num <= svc_lastmsg && !SV_GamedllSvcAllowed( msg_num ))
+	{
+		if( !svgame.msg_veto_num )
+			svgame.msg_veto_num = pfnRegUserMsg( "VetoPayload", -1 );
+
+		Con_Printf( S_WARN "%s: gamedll sent reserved svc id %d (dest %d) -- rerouted to VetoPayload usermsg %d\n",
+			__func__, msg_num, msg_dest, svgame.msg_veto_num );
+		msg_num = svgame.msg_veto_num;
+	}
 
 	svgame.msg_rewrite_index = 0;
 	svgame.msg_rewrite_pos = 0;

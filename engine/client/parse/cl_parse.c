@@ -2230,6 +2230,18 @@ void CL_ParseUserMessage( sizebuf_t *msg, int svc_num, connprotocol_t proto )
 	byte	pbuf[MAX_USERMSG_LENGTH];
 	int	i, iSize;
 
+	// GoldSrc-only empty system messages (killedmonster / foundsecret)
+	// are reserved in our protocol. A misbehaving GoldSrc-brain mod may
+	// still push them raw; they carry no payload, so skipping them keeps
+	// the stream in sync instead of Host_Error'ing the whole client.
+	// (spawnstaticsound 29 has a payload we cannot guess -- the server-side
+	// veto in pfnMessageBegin must keep it off the wire.)
+	if( svc_num == 27 || svc_num == 28 )
+	{
+		Con_DPrintf( S_WARN "%s: skipping GoldSrc-only empty svc id %d\n", __func__, svc_num );
+		return;
+	}
+
 	// NOTE: any user message is really parse at engine, not in client.dll
 	if( svc_num <= svc_lastmsg || svc_num > ( MAX_USER_MESSAGES + svc_lastmsg ))
 	{

@@ -128,6 +128,61 @@ qboolean CL_ConvertImageToWAD3( const char *filename )
 			palette[i * 3 + 2] = image->palette[i * 4 + 2]; // B
 		}
 		indexed = image->buffer;
+
+		// indexed logos used to be saved as gradient
+		// decals (IMAGE_GRADIENT_DECAL -> TYP_PALETTE lump) but the WAD3 loader
+		// rebuilds gradient palettes as a monochrome black->palette[255] ramp,
+		// destroying the logo's real colors. Save as a classic full-color
+		// TYP_MIPTEX decal instead, exactly like the RGBA path below. Keep the
+		// GoldSrc convention that palette index 255 is the transparent index:
+		// first move any source pixels that use index 255 to a free palette
+		// slot so they keep their color instead of becoming holes.
+		{
+			qboolean	idx255_used = false;
+			qboolean	used[SPRAY_PALETTE_SIZE];
+			int		free_idx = -1;
+			int		i, j;
+
+			memset( used, 0, sizeof( used ));
+
+			for( i = 0; i < width * height; ++i )
+			{
+				used[indexed[i]] = true;
+				if( indexed[i] == 255 )
+					idx255_used = true;
+			}
+
+			if( idx255_used )
+			{
+				for( i = 0; i < 255; ++i )
+				{
+					if( !used[i] )
+					{
+						free_idx = i;
+						break;
+					}
+				}
+
+				if( free_idx >= 0 )
+				{
+					palette[free_idx * 3 + 0] = palette[255 * 3 + 0];
+					palette[free_idx * 3 + 1] = palette[255 * 3 + 1];
+					palette[free_idx * 3 + 2] = palette[255 * 3 + 2];
+
+					for( j = 0; j < width * height; ++j )
+					{
+						if( indexed[j] == 255 )
+							indexed[j] = free_idx;
+					}
+				}
+				// else: no free slot, pixels just lose the transparent hole
+			}
+
+			// pure blue = transparent marker, mirrors the RGBA path below
+			palette[255 * 3 + 0] = 0;
+			palette[255 * 3 + 1] = 0;
+			palette[255 * 3 + 2] = 255;
+		}
 	}
 	else
 	{
@@ -161,8 +216,6 @@ qboolean CL_ConvertImageToWAD3( const char *filename )
 	temp_image.size = width * height;
 	temp_image.palette = palette;
 
-	if( is_indexed_img )
-		temp_image.flags |= IMAGE_GRADIENT_DECAL;
 
 	return FS_SaveImage( SPRAY_FILENAME, &temp_image );
 

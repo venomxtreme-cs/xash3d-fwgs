@@ -837,6 +837,13 @@ void Voice_RecordStop( void )
 	}
 
 	VoiceCapture_Activate( false );
+
+	// fully close the capture device so the OS microphone indicator
+	// (e.g. Android privacy icon) disappears as soon as the user
+	// releases +voicerecord. The device is reopened lazily on the next
+	// Voice_RecordStart call.
+	VoiceCapture_Shutdown();
+	voice.device_opened = false;
 	voice.is_recording = false;
 
 	Voice_Status( VOICE_LOCALCLIENT_INDEX, false );
@@ -878,8 +885,20 @@ void Voice_RecordStart( void )
 		}
 	}
 
-	if( !Voice_IsRecording( ) && voice.device_opened )
-		voice.is_recording = VoiceCapture_Activate( true );
+	// open the capture device lazily, only while the user actually
+	// holds +voicerecord. Opening it at connect time keeps the OS
+	// microphone indicator (Android privacy icon) always on.
+	if( !Voice_IsRecording( ))
+	{
+		if( !voice.device_opened )
+			voice.device_opened = VoiceCapture_Init();
+
+		if( voice.device_opened )
+			voice.is_recording = VoiceCapture_Activate( true );
+
+		if( !voice.device_opened )
+			Con_Printf( S_WARN "No microphone is available.\n" );
+	}
 
 	if( Voice_IsRecording())
 		Voice_Status( VOICE_LOCALCLIENT_INDEX, true );
@@ -1174,10 +1193,12 @@ qboolean Voice_Init( const char *pszCodecName, int quality, qboolean preinit )
 		return false;
 	}
 
-	voice.device_opened = VoiceCapture_Init();
-
-	if( !voice.device_opened )
-		Con_Printf( S_WARN "No microphone is available.\n" );
+	// do not open the capture device here. Opening it at connect
+	// time makes the OS microphone indicator (Android privacy icon) stay
+	// on the whole session. The device is opened lazily in
+	// Voice_RecordStart when the user actually presses +voicerecord,
+	// and closed in Voice_RecordStop.
+	voice.device_opened = false;
 
 	voice.initialized = true;
 	return true;

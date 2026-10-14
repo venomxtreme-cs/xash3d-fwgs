@@ -148,8 +148,13 @@ public class XashActivity extends SDLActivity {
 	private String[] getAssetsList(boolean isEngine, String path) {
 		AssetManager am = getAssets(isEngine);
 
+		// never let a NullPointerException reach the JNI caller
+		if (am == null)
+			return new String[]{};
+
 		try {
-			return am.list(path);
+			String[] list = am.list(path);
+			return list != null ? list : new String[]{};
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
@@ -226,6 +231,12 @@ public class XashActivity extends SDLActivity {
 		nativeSetenv("XASH3D_GAME", gamedir);
 
 		String gamelibdir = getIntent().getStringExtra("gamelibdir");
+		if (gamelibdir == null) {
+			// v7: fall back to our own nativeLibraryDir so metamod can find
+			// bundled server libraries (e.g. libhl_android_*.so for Half-Life)
+			// when running games without an external game app.
+			gamelibdir = getApplicationInfo().nativeLibraryDir;
+		}
 		if (gamelibdir != null) nativeSetenv("XASH3D_GAMELIBDIR", gamelibdir);
 
 		String rodir = System.getenv("XASH3D_RODIR");

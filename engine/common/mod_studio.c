@@ -1280,18 +1280,28 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 	if( !phdr )
 		return;	// bad model
 
-	// reject lengths smaller than the header itself (also catches negative garbage)
-	if( phdr->length < (int)sizeof( studiohdr_t ))
-		return;	// bad model
+	// stock GoldSrc never validates the hitbox count: the renderer never
+	// walks the hitbox list (only damage traces do, and never for view
+	// models), so custom models routinely ship garbage counts here. A
+	// wild count would let the loader walk thousands of bogus structs,
+	// so drop the hitbox list instead of condemning the whole model -
+	// every remaining read stays inside the file, like on GoldSrc.
+	if( phdr->numhitboxes < 0 || phdr->numhitboxes > 512
+	 || !Mod_StudioSectionFits( buffersize, phdr->hitboxindex, phdr->numhitboxes, sizeof( mstudiobbox_t )))
+	{
+		if( phdr->numhitboxes != 0 )
+			Con_Printf( S_WARN "%s: bad hitbox count %d @ %d, dropping hitboxes\n",
+				mod->name, phdr->numhitboxes, phdr->hitboxindex );
+		phdr->numhitboxes = 0;
+	}
 
-	// don't trust lengths larger than the loaded file: the length sizes the
-	// in-memory copy below (and the read from the file buffer), so a malformed
-	// header value would either request a multi-gigabyte allocation (fatal on
-	// this platform) or read past the buffer. some converted models ship a
-	// bogus length field while the file itself is complete, so first try to
-	// trust the real file size and load the model anyway; only headers whose
-	// tables don't fit the file load as a bad model instead of killing the host
-	if( (size_t)phdr->length > buffersize )
+	// stock GoldSrc never validates the header length field, and plenty of
+	// custom models ship junk values in it (even negative or ASCII garbage),
+	// so don't condemn such models: any length that doesn't describe the real
+	// file means "trust the file size" instead. the header tables are still
+	// verified against the actual file below, so genuinely truncated or
+	// corrupt models fail safely without huge allocations or over-reads.
+	if( phdr->length < (int)sizeof( studiohdr_t ) || (size_t)phdr->length > buffersize )
 	{
 		if( !Mod_StudioLayoutFits( phdr, buffersize ))
 			return;	// truncated or garbage model

@@ -57,6 +57,10 @@ static void Android_GetAssetManager( android_assets_t *assets )
 {
 	jobject assetManager = (*jni.env)->CallObjectMethod( jni.env, jni.activity, jni.getAssets, assets->engine );
 
+	// v21: clear any exception the call may have thrown, otherwise it
+	// stays pending and poisons every later JNI call on this thread
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
 	if( assetManager )
 		assets->asset_manager = AAssetManager_fromJava( jni.env, assetManager );
 	else if( assets->engine )
@@ -69,6 +73,9 @@ static const char *Android_GetPackageName( qboolean engine )
 	jstring resultJNIStr = (*jni.env)->CallObjectMethod( jni.env, jni.activity, engine ? jni.getPackageName : jni.getCallingPackage );
 	const char *resultCStr;
 
+	// v21: never leave a JNI exception pending
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
 	if( !resultJNIStr )
 		return NULL;
 
@@ -84,7 +91,21 @@ static void Android_ListDirectory( stringlist_t *list, const char *path, qboolea
 {
 	jstring JStr = (*jni.env)->NewStringUTF( jni.env, path );
 	jobjectArray JNIArray = (*jni.env)->CallObjectMethod( jni.env, jni.activity, jni.getAssetsList, engine, JStr );
-	int JNIArraySize = (*jni.env)->GetArrayLength( jni.env, JNIArray );
+	int JNIArraySize;
+
+	// v21: a thrown Java exception makes CallObjectMethod return NULL
+	// and GetArrayLength( NULL ) aborts the whole process (the "launcher
+	// won't start" crash). Check exceptions and bail out gracefully.
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
+	if( !JNIArray )
+	{
+		Con_Reportf( S_WARN "%s: getAssetsList( %s ) returned null, skipping\n", __func__, path );
+		(*jni.env)->DeleteLocalRef( jni.env, JStr );
+		return;
+	}
+
+	JNIArraySize = (*jni.env)->GetArrayLength( jni.env, JNIArray );
 
 	for( int i = 0; i < JNIArraySize; i++ )
 	{
@@ -225,6 +246,14 @@ static file_t *FS_OpenFile_AndroidAssets( searchpath_t *search, const char *file
 	file_t *file = Mem_Calloc( fs_mempool, sizeof( *file ));
 	AAsset *assets = AAssetManager_open( search->assets->asset_manager, filename, AASSET_MODE_RANDOM );
 
+	// v21: AAsset_openFileDescriptor( NULL ) would crash; bail out like
+	// the other open paths do when the file can't be produced
+	if( !assets )
+	{
+		Mem_Free( file );
+		return NULL;
+	}
+
 	file->handle = AAsset_openFileDescriptor( assets, &file->offset, &file->real_length );
 
 	file->position = 0;
@@ -342,13 +371,35 @@ void FS_InitAndroid( void )
 	}
 
 	getContext = (*jni.env)->GetStaticMethodID( jni.env, jni.activity_class, "getContext", "()Landroid/content/Context;" );
+
+	// v21: a missing method leaves a pending Java exception that would
+	// poison every later JNI call on this thread; always clear it
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
+	if( !getContext )
+	{
+		Con_Reportf( S_WARN "%s: can't resolve Activity.getContext, Android assets disabled\n", __func__ );
+		return;
+	}
+
 	jni.activity = (*jni.env)->CallStaticObjectMethod( jni.env, jni.activity_class, getContext );
+
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
+	if( !jni.activity )
+	{
+		Con_Reportf( S_WARN "%s: can't acquire the activity object, Android assets disabled\n", __func__ );
+		return;
+	}
 
 	jni.getPackageName = (*jni.env)->GetMethodID( jni.env, jni.activity_class, "getPackageName", "()Ljava/lang/String;" );
 	jni.getCallingPackage = (*jni.env)->GetMethodID( jni.env, jni.activity_class, "getCallingPackage", "()Ljava/lang/String;" );
 	jni.getAssetsList = (*jni.env)->GetMethodID( jni.env, jni.activity_class, "getAssetsList", "(ZLjava/lang/String;)[Ljava/lang/String;" );
 	jni.getAssets = (*jni.env)->GetMethodID( jni.env, jni.activity_class, "getAssets", "(Z)Landroid/content/res/AssetManager;" );
 
+	// v21: clear pending exceptions from any failed lookup
+	if( (*jni.env)->ExceptionCheck( jni.env ))
+		(*jni.env)->ExceptionClear( jni.env );
 	if( !jni.getPackageName || !jni.getCallingPackage || !jni.getAssetsList || !jni.getAssets )
 		Con_Reportf( S_WARN "%s: unable to find required JNI interfaces to load Android assets\n", __func__ );
 }

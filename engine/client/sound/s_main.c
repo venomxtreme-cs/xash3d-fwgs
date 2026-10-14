@@ -1726,9 +1726,26 @@ static void S_PlayVol_f( void )
 static void S_Say( const char *name, qboolean reliable )
 {
 	char sentence[1024];
+	size_t len;
 
 	// predefined vox sentence
 	if( name[0] == '!' )
+	{
+		S_StartLocalSound( name, 1.0f, reliable );
+		return;
+	}
+
+	// mods call "spk <path>.wav" to play raw sound files (GoldSrc clients
+	// play those directly too); only names without a file extension belong
+	// to the sentence system, otherwise the vox parser mangles the path
+	// (it splits at the dot and hunts for e.g. "<dir>/_period" sounds)
+	len = Q_strlen( name );
+	if( len > 4 && !Q_stricmp( name + len - 4, ".wav" ))
+	{
+		S_StartLocalSound( name, 1.0f, reliable );
+		return;
+	}
+	if( len > 4 && !Q_stricmp( name + len - 4, ".mp3" ))
 	{
 		S_StartLocalSound( name, 1.0f, reliable );
 		return;
