@@ -600,9 +600,12 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
         // the CBasePlayer private data for the fake client and metamod/AMX Mod X
         // never see the player as ingame, so any bot created through
         // pfnCreateFakeClient had to drive the gamedll manually (YaPB does).
-        // Opt-in through sv_fakeclient_connect to keep the classic behaviour
-        // (module-driven connect) untouched.
-        qboolean fullchain = !COM_StringEmptyOrNULL( getenv( "XASH3D_FAKECLIENT_CONNECT" ));
+        // Opt-in through XASH3D_FAKECLIENT_CONNECT to keep the classic behaviour
+        // (module-driven connect) untouched. Set to "1" automatically by
+        // COM_AMXX_FakeClientChain when the metamod plugin list selects E-BOT;
+        // "0" opts out explicitly.
+        const char *fakechain = getenv( "XASH3D_FAKECLIENT_CONNECT" );
+        qboolean fullchain = !COM_StringEmptyOrNULL( fakechain ) && atoi( fakechain ) != 0;
         Con_Printf( S_WARN "SV_FakeConnect: full chain=%d\n", fullchain );
 
         if( fullchain )

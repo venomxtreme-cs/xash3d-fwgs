@@ -398,6 +398,49 @@ static qboolean COM_AMXX_CopyTree( const char *privroot )
         return true;
 }
 
+/*
+===================
+COM_AMXX_FakeClientChain
+
+E-BOT expects ReHLDS-like fake-client semantics: pfnCreateFakeClient runs the
+full game DLL connect chain (ClientConnect -> ClientPutInServer), so the game
+DLL creates the CBasePlayer private data and the bot can leave observer state
+and join a team. Without the chain the fake client never gets game-side player
+data and the bot stays in spectator forever. YaPB instead drives the game DLL
+itself, so the chain must stay OFF when YaPB is the active bot: only enable it
+when the metamod plugin list actually selects E-BOT (metamod reads the gamedir
+copy of plugins.ini, see "[META] Pluginfile: using gamedir copy").
+===================
+*/
+static void COM_AMXX_FakeClientChain( void )
+{
+        char inipath[MAX_SYSPATH];
+        char line[512];
+        FILE *f;
+
+        if( !g_fsapi.GetFullDiskPath( inipath, sizeof( inipath ), "addons/metamod/plugins.ini", false ))
+                return;
+
+        f = fopen( inipath, "rb" );
+        if( !f )
+                return;
+
+        while( fgets( line, sizeof( line ), f ))
+        {
+                // only an active (non-comment) line naming the E-BOT module;
+                // patchPluginsIni comments the entry out when the switch is off
+                if( line[0] != ';' && Q_stristr( line, "libebot" ))
+                {
+                        // overwrite=0: an explicit external setting still wins
+                        setenv( "XASH3D_FAKECLIENT_CONNECT", "1", 0 );
+                        Con_Reportf( "%s: E-BOT selected in %s, enabling full fake-client connect chain\n", __func__, inipath );
+                        break;
+                }
+        }
+
+        fclose( f );
+}
+
 static qboolean COM_AMXX_Setup( char *out, size_t size, const char *realdll )
 {
         static qboolean prepared = false;
@@ -442,6 +485,9 @@ static qboolean COM_AMXX_Setup( char *out, size_t size, const char *realdll )
                         ready = COM_AMXX_CopyTree( privroot );
                 }
         }
+
+        // runs for both branches below: needs only the gamedir plugins.ini
+        COM_AMXX_FakeClientChain();
 
         if( !ready )
         {
