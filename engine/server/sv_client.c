@@ -620,6 +620,20 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
                 {
                         SV_PutClientInServer( cl );
                         cl->state = cs_spawned;
+
+                        // Mirror the real client path and announce the fake
+                        // client's userinfo to the game DLL now that the
+                        // player object exists.  AMX Mod X emulates its
+                        // client_connect/client_putinserver forwards for
+                        // fake clients from ClientUserInfoChanged (its real
+                        // hooks skip FL_FAKECLIENT), so without this call no
+                        // plugin ever sees bots connect: mods that cache
+                        // per-player state in client_connect (weapon mods
+                        // caching the info key buffer, for example) run with
+                        // zeroed handles for every bot and crash on first
+                        // weapon deploy.
+                        if( svgame.dllFuncs.pfnClientUserInfoChanged )
+                                svgame.dllFuncs.pfnClientUserInfoChanged( cl->edict, cl->userinfo );
                 }
                 else
                 {
