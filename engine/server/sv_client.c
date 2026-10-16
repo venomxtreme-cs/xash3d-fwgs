@@ -633,7 +633,10 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
                         // zeroed handles for every bot and crash on first
                         // weapon deploy.
                         if( svgame.dllFuncs.pfnClientUserInfoChanged )
+                        {
                                 svgame.dllFuncs.pfnClientUserInfoChanged( cl->edict, cl->userinfo );
+                                Con_Printf( S_WARN "SV_FakeConnect: userinfo announced for %s\n", netname );
+                        }
                 }
                 else
                 {
