@@ -958,7 +958,8 @@ static void Cmd_ExecuteStringWithPrivilegeCheck( const char *text, qboolean isPr
 	else
 #endif // XASH_DEDICATED
 	{
-		Con_Printf( S_WARN "Unknown command \"%s\"\n", Cmd_Argv( 0 ) );
+		// unknown command - configs legitimately probe for optional cvars and
+		// commands, so a warning per miss just floods the console; stay quiet.
 	}
 }
 

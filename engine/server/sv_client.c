@@ -613,7 +613,6 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
         // "0" opts out explicitly.
         const char *fakechain = getenv( "XASH3D_FAKECLIENT_CONNECT" );
         qboolean fullchain = !COM_StringEmptyOrNULL( fakechain ) && atoi( fakechain ) != 0;
-        Con_Printf( S_WARN "SV_FakeConnect: full chain=%d\n", fullchain );
 
         if( fullchain )
         {
@@ -654,7 +653,11 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
                         if( svgame.dllFuncs.pfnClientUserInfoChanged )
                         {
                                 svgame.dllFuncs.pfnClientUserInfoChanged( cl->edict, cl->userinfo );
-                                Con_Printf( S_WARN "SV_FakeConnect: userinfo announced for %s flags=%#x\n", netname, (unsigned int)cl->edict->v.flags );
+                                // "SV_FakeConnect: userinfo announced for %s flags=%#x" -
+                                // per-connect chatter; only emitted above the highest
+                                // developer level so the console stays clean.
+                                if( host_developer.value > DEV_EXTENDED )
+                                        Con_Printf( "SV_FakeConnect: userinfo announced for %s flags=%#x\n", netname, (unsigned int)cl->edict->v.flags );
                         }
                 }
                 else

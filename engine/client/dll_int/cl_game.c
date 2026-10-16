@@ -3599,12 +3599,9 @@ static void GAME_EXPORT VGui_ViewportPaintBackground( int extents[4] )
 
 static cvar_t* GAME_EXPORT CL_CvarGetPointer( const char *szVarName )
 {
-	cvar_t *result = (cvar_t *)Cvar_FindVar( szVarName );
-
-	if( !result )
-		Con_DPrintf( S_WARN "%s: client tried to get non-existent cvar \"%s\"\n", __func__, szVarName );
-	
-	return result;
+	// probing for a cvar that does not exist is normal mod/plugin behaviour;
+	// the warning that used to live here spammed the console on every query.
+	return (cvar_t *)Cvar_FindVar( szVarName );
 }
 
 // shared between client and server
