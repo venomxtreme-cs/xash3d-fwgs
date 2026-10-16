@@ -584,6 +584,13 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
         cl->userid = g_userid++; // create unique userid
         SetBits( cl->flags, FCL_FAKECLIENT );
 
+        // a previously-connected client leaves residue on the slot edict
+        // (ReGameDLL marks disconnected players FL_DORMANT and keeps the old
+        //  private data) - reset the edict exactly like SV_ConnectClient
+        // does, so a fake client never inherits dead state from a recycled
+        // slot
+        SV_InitEdict( cl->edict );
+
         // parse some info from the info strings
         Q_strncpy( cl->userinfo, userinfo, sizeof( cl->userinfo ));
 
