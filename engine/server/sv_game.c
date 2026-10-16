@@ -227,7 +227,9 @@ void GAME_EXPORT SV_SetModel( edict_t *ent, const char *modelname )
 
 	if( !modelname || ((byte)modelname[0] ) <= ' ' )
 	{
-		Con_Printf( S_WARN "%s: null name\n", __func__ );
+		// benign no-op (custom-weapon kits call this on entities whose
+		// creation failed); keep out of the console, retain in game log
+		Log_Printf( "Warning: %s: null name\n", __func__ );
 		return;
 	}
 
@@ -1120,7 +1122,11 @@ static edict_t* SV_AllocPrivateData( edict_t *ent, string_t className, qboolean 
 
 		if( !SpawnEdict )
 		{
-			Con_Printf( S_ERROR "No spawn function for \"%s\"\n", pszClassName );
+			// Kit-style mods (e.g. custom-weapon plugins renaming real
+			// weapons) rely on create-by-classname failing for their virtual
+			// classnames; keep the diagnostic in the game log instead of
+			// spamming the console every respawn.
+			Log_Printf( "Error: No spawn function for \"%s\"\n", pszClassName );
 
 			// free entity immediately
 			SV_FreeEdict( ent );
