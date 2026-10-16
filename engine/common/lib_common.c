@@ -433,7 +433,10 @@ static void COM_AMXX_FakeClientChain( void )
                 {
                         // overwrite=0: an explicit external setting still wins
                         setenv( "XASH3D_FAKECLIENT_CONNECT", "1", 0 );
-                        Con_Reportf( "%s: E-BOT selected in %s, enabling full fake-client connect chain\n", __func__, inipath );
+                        // per-connect chatter; only emitted above the highest
+                        // developer level so the console stays clean
+                        if( host_developer.value > DEV_EXTENDED )
+                                Con_Reportf( "%s: E-BOT selected in %s, enabling full fake-client connect chain\n", __func__, inipath );
                         break;
                 }
         }
