@@ -628,6 +628,18 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
                         SV_PutClientInServer( cl );
                         cl->state = cs_spawned;
 
+                        // SV_PutClientInServer re-initialized the edict
+                        // (SV_InitEdict frees the private data and
+                        // flags = 0 clears the entvars), dropping the
+                        // FL_CLIENT|FL_FAKECLIENT identity set above before
+                        // the connect chain ever ran. Restore it so the
+                        // announce below and later game DLL code see a real
+                        // fake client: AMX Mod X's bot detection
+                        // (IsBot() tests FL_FAKECLIENT) and ReGameDLL's
+                        // fakeclient bypasses in the team-join menus both
+                        // key off these bits.
+                        SetBits( cl->edict->v.flags, FL_CLIENT|FL_FAKECLIENT );
+
                         // Mirror the real client path and announce the fake
                         // client's userinfo to the game DLL now that the
                         // player object exists.  AMX Mod X emulates its
@@ -642,7 +654,7 @@ edict_t *GAME_EXPORT SV_FakeConnect( const char *netname )
                         if( svgame.dllFuncs.pfnClientUserInfoChanged )
                         {
                                 svgame.dllFuncs.pfnClientUserInfoChanged( cl->edict, cl->userinfo );
-                                Con_Printf( S_WARN "SV_FakeConnect: userinfo announced for %s\n", netname );
+                                Con_Printf( S_WARN "SV_FakeConnect: userinfo announced for %s flags=%#x\n", netname, (unsigned int)cl->edict->v.flags );
                         }
                 }
                 else
