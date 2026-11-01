@@ -1472,9 +1472,32 @@ static httpserver_t *HTTP_ParseURL( const char *url_, qboolean full_path )
 	{
 		url = url_ + 7;
 	}
+	else if( url_[0] && !Q_strpbrk( url_, " \t\r\n" ))
+	{
+		// build 115 FASTDL FIX: scheme-less download URL (a lot of servers
+		// write sv_downloadurl "fastdl.host/maps/" with no scheme). This
+		// used to return NULL -> "not valid url" -> fastdl silently dead
+		// and every map fell back to the disk stream (or a failed connect).
+		// Assume plain HTTP - if the host actually speaks TLS it will
+		// redirect/refuse and the queue moves to the next server anyway.
+		// A real foreign scheme ("ftp://...") still carries "://" with the
+		// scheme letters before it, so it is rejected instead of parsed
+		// as a host name - but "host:8080/path" only has a port colon
+		// (not followed by "//") and must still be accepted.
+		const char *scheme = strstr( url_, "://" );
 
-	if( !url )
+		if( scheme && scheme != url_ )
+			return NULL; // unknown scheme, e.g. ftp://
+
+		// protocol-relative "//host/path" gets its slashes dropped so the
+		// host scan below doesn't see an immediate '/'
+		url = !strncmp( url_, "//", 2 ) ? url_ + 2 : url_;
+		Con_Printf( "FASTDL: \"%s\" has no scheme, assuming http://\n", url_ );
+	}
+	else
+	{
 		return NULL;
+	}
 
 	if( secure && !HTTP_TlsAvailable( ))
 	{
