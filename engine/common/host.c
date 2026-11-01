@@ -1291,7 +1291,21 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 
 		if( !host.config_executed )
 		{
-			Cbuf_AddText( "exec config.cfg\n" );
+			// A7 build 112 (user: "when i removed config.cfg and open game
+			// it show graphics weird like from xash old, fix it do like pc
+			// version goldsource"): with no config.cfg the raw engine
+			// fallbacks took over and the picture drifted from the retail
+			// look. When the config is absent, seed the shipped PC
+			// GoldSource baseline instead (goldsource_defaults.cfg, read
+			// from the game APK assets). A present config.cfg keeps winning
+			// exactly as before - this only changes the missing-config case.
+			if( FS_FileExists( "config.cfg", false ))
+				Cbuf_AddText( "exec config.cfg\n" );
+			else if( FS_FileExists( "goldsource_defaults.cfg", false ))
+			{
+				Con_Printf( "[A7] config.cfg missing - applying PC GoldSource graphics baseline\n" );
+				Cbuf_AddText( "exec goldsource_defaults.cfg\n" );
+			}
 			Cbuf_Execute();
 		}
 

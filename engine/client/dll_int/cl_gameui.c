@@ -1359,6 +1359,17 @@ qboolean UI_LoadProgs( void )
 
 	if( gameui.hInstance ) UI_UnloadProgs();
 
+	// A7 build 112: menu anti-theft handshake (user: "they stole my menu
+	// of game ui from libmenu.so ... make method not get my own gameui").
+	// Stamp the token BEFORE the menu library is loaded; the menu verifies
+	// it at the top of its UI_Init() and refuses to set uiStatic.initialized
+	// without it, so every exported GameUI entry stays a no-op. Someone who
+	// drops our libmenu.so into a FOREIGN engine gets no menu at all -
+	// only our engine carries this half of the pair. Best-effort but it
+	// defeats exactly the reported extraction attack.
+	Cvar_Get( "ui_build_token", "M3nuS3al7xK9pQ2vT6wJ5rB8dH4fN1cZ", FCVAR_READ_ONLY,
+		"menu integrity token (engine half of the GameUI handshake)" );
+
 	// setup globals
 	gameui.globals = &gpGlobals;
 

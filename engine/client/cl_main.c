@@ -351,7 +351,34 @@ static void CL_CheckLogoChanged( void )
 static void CL_CheckAvatarImported( void )
 {
 #if XASH_ANDROID
-	if( !Android_AvatarSavedPending( ))
+	// -2 = baseline never taken (first frame only records, never fires)
+	static int s_ft_custom = -2;
+	static int s_ft_self = -2;
+	qboolean fresh = Android_AvatarSavedPending( );
+
+	// A7 build 112 (user: "fix logo still not updated in options like too
+	// late do any way"): the JNI flag from writeAvatarPair is the fast
+	// path, but it is one-shot - if it is ever missed (swallowed JNI
+	// error, an import path that did not raise it) the Options preview
+	// stayed stale until the menu reloaded its pictures on its own.
+	// Poll the on-disk times as a belt: any change on disk = fresh logo,
+	// one frame later, no matter how the file got there.
+	int ft_custom = FS_FileTime( "media/avatars/avatar_custom.png", false );
+	int ft_self = FS_FileTime( "media/avatars/avatar_self.png", false );
+
+	if( s_ft_custom == -2 )
+	{
+		s_ft_custom = ft_custom;
+		s_ft_self = ft_self;
+	}
+	else if( ft_custom != s_ft_custom || ft_self != s_ft_self )
+	{
+		fresh = true;
+		s_ft_custom = ft_custom;
+		s_ft_self = ft_self;
+	}
+
+	if( !fresh )
 		return;
 
 	// next PIC_Load of these names reads the fresh file from disk
@@ -3722,16 +3749,12 @@ static void CL_LoadingFeed( void )
 		return;
 	}
 
-	// A7 build 98: auto-heal. A load is in progress (disable_screen latched)
-	// but the platform window is down - some call site missed its Show, or a
-	// transient JNI hiccup dropped it. Re-raise it so the load is never a
-	// black screen. Never during background/demo playback.
-	if( cls.disable_screen && !Android_LoadingShown( ) && !cl.background && !cls.demoplayback )
-	{
-		Con_Printf( "[A7] loading: auto-re-show (window was down mid-load)\n" );
-		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
-			cls.servername : "" );
-	}
+	// A7 build 112: the auto-re-show (build 98) left with the platform
+	// loading window itself (user: "remove loading xash version ... it
+	// stuck"). Re-raising this Android view mid-load is what could freeze
+	// its 90%-black shade over the game when a load ended without reaching
+	// SIGNONS (aborted changelevel / watchdog timeout); the engine plaque
+	// + the GameUI "Loading..." dialog cover every load frame now.
 
 	pct = scr_loading.value;
 

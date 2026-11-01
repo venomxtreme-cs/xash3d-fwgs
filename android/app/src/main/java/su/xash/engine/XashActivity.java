@@ -789,7 +789,11 @@ public class XashActivity extends SDLActivity {
 			// both scoreboards reload it right away
 			nativeAvatarSaved();
 		} catch ( Throwable t ) {
-			Log.w( TAG, "avatar write failed", t );
+			// A7 build 112: LOUD on purpose. If this trips the fast
+			// refresh (JNI flag) never reaches the engine and the logo
+			// only updates late; the engine-side FS_FileTime poll still
+			// covers it, but the failure must be visible in logcat.
+			Log.e( TAG, "avatar write/notify failed - engine file-time poll still covers it", t );
 		}
 	}
 

@@ -542,13 +542,17 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 		else UI_ConnectionProgress_Connect( NULL );
 
 #if XASH_ANDROID
-		// A7 build 97: the platform loading window goes up above the GL
-		// surface right here - before any latch, redraw or blocking spawn -
-		// so the first frame of every load is the shade with the logo and
-		// the "Loading..." box instead of black. connect_time is set for
-		// remote sessions; a local listen load shows the plain title
-		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
-			cls.servername : "" );
+		// A7 build 112 (user: "remove loading xash version, let only
+		// loading goldsource ... it stuck"): the platform loading WINDOW
+		// is no longer raised here. Every load frame already draws the
+		// engine plaque (opaque backdrop) and the centered GameUI
+		// "Loading..." dialog through SCR_UpdateScreen, so the screen is
+		// never black - and this extra Android view could only ever be
+		// torn down by cls.signon == SIGNONS, so an aborted load, a
+		// watchdog timeout or a failed changelevel froze its 90%-black
+		// shade over the game ("black screen after changing map").
+		// Shield instead: drop any stale window if one ever exists.
+		Android_LoadingHide();
 #endif // XASH_ANDROID
 
 		// key_menu so taps and ESC reach the dialog's Cancel/Esc while the
@@ -628,6 +632,13 @@ void SCR_EndLoadingPlaque( void )
 		UI_ConnectionProgress_Disconnect();
 		UI_SetActiveMenu( false );
 	}
+
+#if XASH_ANDROID
+	// A7 build 112: this is THE "load is over" point (signon complete,
+	// disconnect, abort) - also take the platform loading window down
+	// here so no overlay can ever outlive the load, whatever raised it.
+	Android_LoadingHide();
+#endif // XASH_ANDROID
 //	SNDDMA_UnlockSound();
 }
 
@@ -793,6 +804,9 @@ void SCR_UpdateScreen( void )
 			{
 				Con_Reportf( "%s: loading plaque timed out\n", __func__ );
 				cls.disable_screen = 0.0f;
+#if XASH_ANDROID
+				Android_LoadingHide(); // A7 build 112: watchdog drop - never leave the window up
+#endif // XASH_ANDROID
 			}
 		}
 		else
