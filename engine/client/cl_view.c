@@ -342,6 +342,14 @@ qboolean V_PreRender( void )
 		{
 			Con_Reportf( "%s: loading plaque timed out\n", __func__ );
 			cls.disable_screen = 0.0f;
+#if XASH_ANDROID
+			// A7 build 113: this is the SECOND freeze watchdog (the one in
+			// SCR_UpdateScreen has one too) - drop the platform loading
+			// window here as well, or a latch released from this path
+			// could leave its shade frozen over the game ("black screen
+			// after changing map")
+			Android_LoadingHide();
+#endif // XASH_ANDROID
 		}
 		return false;
 	}

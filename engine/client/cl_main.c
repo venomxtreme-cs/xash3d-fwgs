@@ -3749,12 +3749,22 @@ static void CL_LoadingFeed( void )
 		return;
 	}
 
-	// A7 build 112: the auto-re-show (build 98) left with the platform
-	// loading window itself (user: "remove loading xash version ... it
-	// stuck"). Re-raising this Android view mid-load is what could freeze
-	// its 90%-black shade over the game when a load ended without reaching
-	// SIGNONS (aborted changelevel / watchdog timeout); the engine plaque
-	// + the GameUI "Loading..." dialog cover every load frame now.
+	// A7 build 113 (user: "return how it was and fix black screen"): the
+	// auto-re-show is back - if anything dropped the window mid-load,
+	// raise it again so no load frame ever exposes the engine-side
+	// loading underneath (that is the "xash loading" the user wants gone;
+	// this GoldSource window IS the loading view). Safe now, unlike build
+	// 111: only while cls.disable_screen is latched (the load is
+	// officially running), and BOTH release points - SCR_EndLoadingPlaque
+	// and the freeze watchdog - clear the latch AND hide the window
+	// (build 112), so an aborted load can never re-raise the shade over
+	// the game the way 111 did.
+	if( cls.disable_screen && !Android_LoadingShown( ) && !cl.background && !cls.demoplayback )
+	{
+		Con_Printf( "[A7] loading: auto-re-show (window was down mid-load)\n" );
+		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+			cls.servername : "" );
+	}
 
 	pct = scr_loading.value;
 

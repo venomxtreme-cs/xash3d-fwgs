@@ -542,17 +542,21 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 		else UI_ConnectionProgress_Connect( NULL );
 
 #if XASH_ANDROID
-		// A7 build 112 (user: "remove loading xash version, let only
-		// loading goldsource ... it stuck"): the platform loading WINDOW
-		// is no longer raised here. Every load frame already draws the
-		// engine plaque (opaque backdrop) and the centered GameUI
-		// "Loading..." dialog through SCR_UpdateScreen, so the screen is
-		// never black - and this extra Android view could only ever be
-		// torn down by cls.signon == SIGNONS, so an aborted load, a
-		// watchdog timeout or a failed changelevel froze its 90%-black
-		// shade over the game ("black screen after changing map").
-		// Shield instead: drop any stale window if one ever exists.
-		Android_LoadingHide();
+		// A7 build 113 (user: "return how it was and fix black screen"): the
+		// GoldSource-styled platform loading window (CS collage art that is
+		// never black + the olive "Loading..." box - the build 97/98/99
+		// view) is raised again right here, before any latch, redraw or
+		// blocking spawn, so the first frame of every load is game art.
+		// connect_time is set for remote sessions; a local listen load
+		// shows the plain title. Build 112 wrongly removed THIS window -
+		// it is the "loading goldsource" the user meant; what must never
+		// show again is only the engine-side xash loading underneath it.
+		// The build-112 teardown hides (SCR_EndLoadingPlaque, the freeze
+		// watchdog) stay: they are what stop this window's shade from
+		// outliving an aborted load ("black screen after changing map").
+		Con_DPrintf( "[A7] loading: raising platform loading window (build 113 restore)\n" );
+		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+			cls.servername : "" );
 #endif // XASH_ANDROID
 
 		// key_menu so taps and ESC reach the dialog's Cancel/Esc while the
