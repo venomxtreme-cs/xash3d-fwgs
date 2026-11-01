@@ -847,6 +847,8 @@ void CL_FireEvents( void );
 qboolean CL_FixedFont( cl_font_t *font );
 qboolean Con_LoadFixedWidthFont( const char *fontname, cl_font_t *font, float scale, convar_t *rendermode, uint texFlags );
 qboolean Con_LoadVariableWidthFont( const char *fontname, cl_font_t *font, float scale, convar_t *rendermode, uint texFlags );
+// A7 build 98: runtime TrueType loader for the in-game HUD font
+qboolean Con_LoadTTFFont( const char *ttfpath, cl_font_t *font, float scale, convar_t *rendermode, uint texFlags );
 void CL_FreeFont( cl_font_t *font );
 void CL_SetFontRendermode( cl_font_t *font );
 void CL_SetFontColor( cl_font_t *font, const rgba_t color );
@@ -1132,6 +1134,7 @@ void Con_DrawConsole( void );
 void Con_DrawVersion( void );
 int Con_UtfProcessChar( int in );
 int Con_UtfProcessCharForce( int in );
+int Con_GetCodepage( void ); // active 1-byte console codepage (0/1251/1252)
 int Con_UtfMoveLeft( char *str, int pos );
 int Con_UtfMoveRight( char *str, int pos, int length );
 void Con_DefaultColor( int r, int g, int b, qboolean gameui );
@@ -1140,8 +1143,21 @@ cl_font_t *Con_GetFont( int num );
 int Con_DrawString( int x, int y, const char *string, const rgba_t setColor ); // legacy, use cl_font.c
 void GAME_EXPORT Con_DrawStringLen( const char *pText, int *length, int *height ); // legacy, use cl_font.c
 void Con_CharEvent( int key );
+// A7 build 107: typing-freeze trace (armed by the first typed char, then
+// burns a bounded marker budget in console.c / in_keys.c / host_sdl3.c)
+void Con_A7Trace( const char *msg );
 void Key_Console( int key );
 void Key_Message( int key );
+// A7 build 91: floating console window (menu / paused game)
+qboolean Con_WindowVisible( void );
+qboolean Con_WindowFocused( void );
+void Con_WindowOpen( qboolean force );
+void Con_WindowClose( qboolean userInitiated );
+void Con_WindowAutoOpen( qboolean menuOpen );
+void Con_WindowReset( void );
+void Con_WindowKey( int key );
+void Con_WindowSetMouse( int x, int y );
+qboolean Con_WindowMouseEvent( int key, qboolean down );
 void Con_FastClose( void );
 void Con_Bottom( void );
 void Con_PageDown( int lines );
@@ -1201,6 +1217,9 @@ void UI_ConnectionProgress_Precache( void );
 void UI_ConnectionProgress_Connect( const char *server );
 void UI_ConnectionProgress_ChangeLevel( void );
 void UI_ConnectionProgress_ParseServerInfo( const char *server );
+// A7 build 97: transfer block (second bar) of the platform loading window,
+// fed from cl_main.c - open with the transferring file, close with NULL
+void CL_LoadingDownloadBlock( const char *file, qboolean open );
 char **GAME_EXPORT CL_GetFilesList( const char *pattern, int *numFiles, int gamedironly ); // used by both UI and Render APIs
 
 //
@@ -1222,6 +1241,7 @@ void CL_GetSecuredClientAPI( CL_EXPORT_FUNCS F );
 void SteamBroker_Init( void );
 void SteamBroker_Shutdown( void );
 void SteamBroker_Frame( void );
+int SteamBroker_GetPlayerInfo( uint64_t steamid, sbrk_player_info_t *player );
 qboolean SteamBroker_InitiateGameConnection( netadr_t serveradr, int challenge );
 void SteamBroker_TerminateGameConnection( void );
 

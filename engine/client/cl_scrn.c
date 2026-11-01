@@ -473,17 +473,42 @@ SCR_DrawPlaque
 */
 static qboolean SCR_DrawPlaque( void )
 {
+	int	levelshot = 0;
+
+	// A7: always draw the loading screen. this used to be gated behind
+	// allow_levelshots (which defaults to 0), so during the whole connect
+	// and precache phase nothing was drawn at all and the screen stayed black
 	if(( cl_allow_levelshots.value && !cls.changelevel ) || cl.background )
 	{
-		int levelshot = ref.dllFuncs.GL_LoadTexture( cl_levelshot_name.string, NULL, 0, TF_IMAGE );
-		ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
-		ref.dllFuncs.R_DrawStretchPic( 0, 0, refState.width, refState.height, 0, 0, 1, 1, levelshot );
-		if( !cl.background ) CL_DrawHUD( CL_LOADING );
-
-		return true;
+		// no levelshot file → the name is forced to "*black";
+		// skip loading that so the loading screen can draw its own backdrop
+		if( Q_stricmp( cl_levelshot_name.string, "*black" ))
+			levelshot = ref.dllFuncs.GL_LoadTexture( cl_levelshot_name.string, NULL, 0, TF_IMAGE );
 	}
 
-	return false;
+	if( levelshot )
+	{
+		ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
+		ref.dllFuncs.R_DrawStretchPic( 0, 0, refState.width, refState.height, 0, 0, 1, 1, levelshot );
+	}
+	else
+	{
+		// A7 build 92: PC GoldSource loads on a plain black backdrop (the
+		// olive tint and the centered loading art are both gone) - the
+		// levelshot above still shows when the mod provides one
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, 0, 0, refState.width, refState.height, 0, 0, 0, 255 );
+	}
+
+	// A7 build 95: the bottom LOADING band is gone for every interactive
+	// load (local start, connect, fastdl download, changelevel) - the
+	// centered GameUI dialog with the backdrop art is the loading view
+	// the reference shows (user: "loading ... view that i tell you in
+	// picture, not loading in down"). the band stays only for
+	// background-map sessions and demo playback, where no dialog is
+	// raised at all
+	if( cl.background || cls.demoplayback ) CL_DrawHUD( CL_LOADING );
+
+	return true;
 }
 
 /*
@@ -503,8 +528,68 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 			SCR_UpdateScreen();
 	}
 
+	// A7 build 93: raise the GameUI loading dialog - the PC CS 1.6
+	// "Loading..." box from the reference picture (status line, gold
+	// segmented bar, Cancel) over the plain plaque backdrop. scr_loading
+	// already drives the bar. a remote session is identified by
+	// connect_time (CL_Connect_f latches it before calling here); a local
+	// listen server reports "Starting local game server..." instead.
+	// SCR_EndLoadingPlaque takes the dialog back down.
+	if( !is_background && !cls.demoplayback )
+	{
+		if( cls.connect_time != 0.0f && cls.servername[0] )
+			UI_ConnectionProgress_Connect( cls.servername );
+		else UI_ConnectionProgress_Connect( NULL );
+
+#if XASH_ANDROID
+		// A7 build 97: the platform loading window goes up above the GL
+		// surface right here - before any latch, redraw or blocking spawn -
+		// so the first frame of every load is the shade with the logo and
+		// the "Loading..." box instead of black. connect_time is set for
+		// remote sessions; a local listen load shows the plain title
+		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+			cls.servername : "" );
+#endif // XASH_ANDROID
+
+		// key_menu so taps and ESC reach the dialog's Cancel/Esc while the
+		// load runs (an open console keeps its key_dest untouched)
+		if( cls.key_dest != key_console )
+			Key_SetKeyDest( key_menu );
+	}
+
 	if( cls.state == ca_disconnected || cls.disable_screen )
+	{
+		// build 90: the freeze must be latched HERE too. a local load starts
+		// from the menu (state is still 'disconnected') so this branch always
+		// hit, returned, and never set cls.disable_screen — the next frames ran
+		// the normal ca_disconnected path and Con_DrawConsole took the screen
+		// over (fullscreen console + key_dest forced to key_console)
+		cls.disable_screen = host.realtime;
+
+		// A7: a local map load starts from the menu (state is still
+		// 'disconnected') and the server spawn that follows is fully
+		// synchronous — draw the loading screen right now so it stays up
+		// instead of a frozen menu frame followed by black
+		if( cls.state == ca_disconnected && GameState->nextstate != STATE_RUNFRAME )
+		{
+			float		saved_disable = cls.disable_screen;
+			qboolean	prepped;
+
+			// build 90: lift the latch only for V_PreRender and put it back
+			// before the 2d pass, so V_PostRender → Con_DrawConsole never
+			// paints the console over this plaque frame
+			cls.disable_screen = 0.0f;
+			prepped = V_PreRender( );
+			cls.disable_screen = saved_disable;
+
+			if( prepped )
+			{
+				SCR_DrawPlaque();
+				V_PostRender();
+			}
+		}
 		return; // already set
+	}
 
 	if( cls.key_dest == key_console )
 		return;
@@ -530,6 +615,19 @@ void SCR_EndLoadingPlaque( void )
 {
 	cls.disable_screen = 0.0f;
 	Con_ClearNotify();
+
+	// A7 build 93: close the GameUI loading dialog that
+	// SCR_BeginLoadingPlaque/CL_PrecacheResources raised. HandleDisconnect
+	// resets its state (no-op if it never showed); UI_SetActiveMenu(false)
+	// drops it from the menu stack - the dialog's own Hide can't remove the
+	// last window outside the game (it would bounce key_dest to the console
+	// on every frame) - and lands key_dest on the game so input works again
+	// right after the load. background-map sessions keep their menu.
+	if( !cl.background )
+	{
+		UI_ConnectionProgress_Disconnect();
+		UI_SetActiveMenu( false );
+	}
 //	SNDDMA_UnlockSound();
 }
 
@@ -673,6 +771,51 @@ void SCR_UpdateScreen( void )
 {
 	qboolean screen_redraw = true; // assume screen has been redrawn
 
+	if( cls.disable_screen )
+	{
+		// A7: the loading plaque is up — keep drawing it (with the animated
+		// progress bar) instead of freezing the previous frame for the whole
+		// load. the old freeze-existed because 2d on a half-torn-down world
+		// looked ugly on some gpus; the plaque paints a full opaque backdrop
+		// first, so there is nothing half-drawn left to see
+		if(( host.realtime - cls.disable_screen ) > cl_timeout.value )
+		{
+			// A7 build 91: never give up on the plaque while a connection
+			// is still being negotiated - the connect and the download of
+			// custom content can legitimately take longer than cl_timeout,
+			// and the loading screen must cover that whole phase. a tick
+			// just proved the host is alive, so restart the watchdog.
+			if( cls.state == ca_connecting || cls.state == ca_connected || cls.state == ca_validate )
+			{
+				cls.disable_screen = host.realtime;
+			}
+			else
+			{
+				Con_Reportf( "%s: loading plaque timed out\n", __func__ );
+				cls.disable_screen = 0.0f;
+			}
+		}
+		else
+		{
+			float		saved_disable = cls.disable_screen;
+			qboolean	prepped;
+
+			// build 90: lift the latch only for V_PreRender, restore it before
+			// the 2d pass — the whole frame must run with cls.disable_screen
+			// latched or Con_DrawConsole unveils the console over the plaque
+			cls.disable_screen = 0.0f;
+			prepped = V_PreRender( );
+			cls.disable_screen = saved_disable;
+
+			if( prepped )
+			{
+				SCR_DrawPlaque();
+				V_PostRender();
+			}
+			return;
+		}
+	}
+
 	if( !V_PreRender( )) return;
 
 	switch( cls.state )
@@ -718,8 +861,30 @@ void SCR_LoadCreditsFont( void )
 	float scale = hud_fontscale.value;
 	dword crc = 0;
 
+	// build 102: the crisp TrueType HUD font is back for EVERY HUD string
+	// (build 101 had reverted it to the bitmap face and the text quality
+	// dropped - user: "reback that new one of fonts", "hudmessage with good
+	// quality like before"). Tahoma is CS 1.6's signature face and lives at
+	// <gamedir>/gfx/fonts/tahoma.ttf (staged by the build). HUD text only -
+	// the console window keeps Con_GetFont(). On failure we fall through to
+	// the classic bitmap chain below.
+	// A7 build 110: back to plain TF_FONT (bilinear) - build 108's TF_NEAREST
+	// made the text look worse ("you returned quality bad now, reback how it
+	// was before"). This is the exact pre-build-108 smoothing.
+	if( Con_LoadTTFFont( "gfx/fonts/tahoma.ttf", font, scale, &hud_fontrender, TF_FONT ))
+	{
+		success = true;
+		Con_Printf( "[A7] font: HUD TrueType (gfx/fonts/tahoma.ttf)\n" );
+	}
+	else if( Con_LoadTTFFont( "gfx/fonts/FiraSans-Regular.ttf", font, scale, &hud_fontrender, TF_FONT ))
+	{
+		success = true;
+		Con_Printf( "[A7] font: HUD TrueType (gfx/fonts/FiraSans-Regular.ttf)\n" );
+	}
+	else Con_Printf( "[A7] font: TrueType not found, HUD falls back to bitmap\n" );
+
 	// replace default gfx.wad textures by current charset's font
-	if( !CRC32_File( &crc, "gfx.wad" ) || crc == 0x49eb9f16 )
+	if( !success && ( !CRC32_File( &crc, "gfx.wad" ) || crc == 0x49eb9f16 ))
 	{
 		string charsetFnt;
 
@@ -727,12 +892,17 @@ void SCR_LoadCreditsFont( void )
 			"creditsfont_%s.fnt", Cvar_VariableString( "con_charset" )) > 0 )
 		{
 			if( FS_FileExists( charsetFnt, false ))
-				success = Con_LoadVariableWidthFont( charsetFnt, font, scale, &hud_fontrender, TF_FONT );
+			{
+				// A7 build 91: TF_NEAREST keeps the bitmap crisp when
+				// hud_fontscale (1.5) upscales it - the bilinear default
+				// smeared the glyphs at high font scales
+				success = Con_LoadVariableWidthFont( charsetFnt, font, scale, &hud_fontrender, TF_FONT|TF_NEAREST );
+			}
 		}
 	}
 
 	if( !success )
-		success = Con_LoadVariableWidthFont( "gfx/creditsfont.fnt", font, scale, &hud_fontrender, TF_FONT );
+		success = Con_LoadVariableWidthFont( "gfx/creditsfont.fnt", font, scale, &hud_fontrender, TF_FONT|TF_NEAREST );
 
 	// it's a Quake font, we need to keep source texture for it
 	if( !success )

@@ -689,6 +689,13 @@ void pfnResetTutorMessageDecayData( void );
 // con_utils.c
 //
 void Con_CompleteCommand( field_t *field, qboolean print_suggestions );
+// A7 build 105: dropdown list for the floating console window while typing
+// (every command/cvar starting with the first word of `text`)
+#define CON_SUGGEST_NAME	64
+int Con_GetCompletionMatches( const char *text, char (*out)[CON_SUGGEST_NAME], int maxOut );
+// A7 build 106: index all cmd/cvar names once (console window open), so
+// per-keystroke suggestions only scan a flat array
+int Con_SuggestBuildIndex( void );
 void Cmd_AutoComplete( char *complete_string );
 void Cmd_AutoCompleteClear( void );
 void Host_InitializeConfig( file_t *f, const char *config, const char *description );
@@ -913,6 +920,7 @@ void NET_MasterClear( void );
 void NET_MasterShutdown( void );
 qboolean NET_GetMaster( netadr_t from, uint *challenge, double *last_heartbeat );
 qboolean NET_MasterQuery( uint32_t key, qboolean net, const char *filter );
+qboolean NET_MasterQueryNextPage( netadr_t from, const netadr_t *seed, const char *filter );
 void NET_QueryServerByAddress( netadr_t adr, connprotocol_t proto );
 
 //

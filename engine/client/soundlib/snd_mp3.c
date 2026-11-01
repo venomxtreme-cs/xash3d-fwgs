@@ -22,7 +22,7 @@ GNU General Public License for more details.
 typedef struct did3v2_header_s
 {
 	char     ident[3];  // must be "ID3"
-	uint8_t  major_ver; // must be 4
+	uint8_t  major_ver; // must be 3 or 4
 	uint8_t  minor_ver; // must be 0
 	uint8_t  flags;
 	uint32_t length; // size of extended header, padding and frames
@@ -68,6 +68,16 @@ static uint32_t Sound_ParseSynchInteger( uint32_t v )
 	res |= (( v >> 0  ) & 0x7f ) << 21;
 
 	return res;
+}
+
+// ID3v2.3 frame and extended-header sizes are plain big endian integers;
+// only v2.4 switched them to synchsafe.  v is read back as a little endian
+// word on every platform Xash targets, so decode from the raw bytes.
+static uint32_t Sound_ParsePlainInteger( uint32_t v )
+{
+	const byte *b = (const byte *)&v;
+
+	return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
 }
 
 static void Sound_HandleCustomID3Comment( const char *key, const char *value )
@@ -120,6 +130,7 @@ static qboolean Sound_ParseID3Tag( const byte *buffer, fs_offset_t filesize )
 	const did3v2_header_t *header = (const did3v2_header_t *)buffer;
 	const byte *buffer_begin = buffer;
 	uint32_t tag_length;
+	int is_v24;
 
 	if( filesize < sizeof( *header ))
 		 return false;
@@ -136,12 +147,15 @@ static qboolean Sound_ParseID3Tag( const byte *buffer, fs_offset_t filesize )
 		return true; // missing tag header is not an error
 	}
 
-	// support only latest id3 v2.4
-	if( header->major_ver != 4 || header->minor_ver == 0xff )
+	// support id3v2.3 and v2.4 (v2.4 is preferred, but most tagging tools
+	// still emit v2.3 by default; LOOP_START extraction must work on both)
+	if(( header->major_ver != 3 && header->major_ver != 4 ) || header->minor_ver == 0xff )
 	{
 		Con_Printf( S_ERROR "%s: invalid ID3v2 tag version 2.%d.%d. Convert to ID3v2.4!\n", __func__, header->major_ver, header->minor_ver );
 		return false;
 	}
+
+	is_v24 = header->major_ver >= 4;
 
 	tag_length = Sound_ParseSynchInteger( header->length );
 	if( tag_length > filesize - sizeof( *header ))
@@ -154,7 +168,14 @@ static qboolean Sound_ParseID3Tag( const byte *buffer, fs_offset_t filesize )
 	if( FBitSet( header->flags, ID3V2_HEADER_EXTENDED_HEADER ))
 	{
 		const did3v2_extended_header_t *ext_header = (const did3v2_extended_header_t *)buffer;
-		uint32_t ext_length = Sound_ParseSynchInteger( ext_header->length );
+		uint32_t ext_length;
+
+		// v2.4 includes its own 4 bytes in the synchsafe length; v2.3
+		// reports a plain big endian size that excludes them
+		if( is_v24 )
+			ext_length = Sound_ParseSynchInteger( ext_header->length );
+		else
+			ext_length = Sound_ParsePlainInteger( ext_header->length ) + 4;
 
 		if( ext_length > tag_length )
 		{
@@ -168,7 +189,13 @@ static qboolean Sound_ParseID3Tag( const byte *buffer, fs_offset_t filesize )
 	while( buffer - buffer_begin < tag_length )
 	{
 		const did3v2_frame_t *frame = (const did3v2_frame_t *)buffer;
-		uint32_t frame_length = Sound_ParseSynchInteger( frame->length );
+		uint32_t frame_length;
+
+		// v2.3 frame sizes are plain big endian integers, v2.4 uses synchsafe
+		if( is_v24 )
+			frame_length = Sound_ParseSynchInteger( frame->length );
+		else
+			frame_length = Sound_ParsePlainInteger( frame->length );
 
 		if( frame_length > tag_length )
 		{

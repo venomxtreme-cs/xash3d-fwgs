@@ -68,6 +68,10 @@ class Game(val ctx: Context, val basedir: File, val gameInfoFile: File) {
 					commandLineArgs += "-dll @yapb "
 				}
 				externalGame = true
+			} else if (packageNames.contains("su.xash.cs16clientamxx")) {
+				// A7: the AMXX build carries its own metamod/plugins.ini chain
+				// (YaPB and ebot load through it), so no -dll override here
+				externalGame = true
 			}
 		}
 
@@ -195,7 +199,9 @@ class Game(val ctx: Context, val basedir: File, val gameInfoFile: File) {
 	private fun getPackageNamesForGameDir(gamedir: String): Array<String>? {
 		if (gamedir.equals("cstrike", ignoreCase = true)
 			|| gamedir.equals("czero", ignoreCase = true))
-			return arrayOf("su.xash.cs16client.test", "su.xash.cs16client")
+			// A7: prefer the locally built AMXX client when it is installed
+			return arrayOf("su.xash.cs16clientamxx.test", "su.xash.cs16clientamxx",
+				"su.xash.cs16client.test", "su.xash.cs16client")
 
 		if (gamedir.equals("tfc", ignoreCase = true))
 			return arrayOf("su.xash.tf15client.test", "su.xash.tf15client")

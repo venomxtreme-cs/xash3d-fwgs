@@ -160,6 +160,11 @@ static void GAME_EXPORT VGUI_UploadTexture( int id, const char *buffer, int widt
 
 	vgui.textures[id].gl_texturenum = GL_LoadTextureInternal( texName, &r_image, TF_IMAGE );
 	memcpy( vgui.textures[id].hash, hash, sizeof( hash ));
+	static int uploadReports;
+	if( uploadReports++ < 4 )
+		Con_Printf( "VGUI trace: upload id=%d renderer=%d size=%dx%d rgba=%u,%u,%u,%u\n",
+			id, vgui.textures[id].gl_texturenum, width, height,
+			(byte)buffer[0], (byte)buffer[1], (byte)buffer[2], (byte)buffer[3] );
 }
 
 static void GAME_EXPORT VGUI_CreateTexture( int id, int width, int height )
@@ -208,6 +213,20 @@ static void GAME_EXPORT VGUI_SetupDrawingText( int *pColor )
 	Vector4Set( vgui.color, pColor[0], pColor[1], pColor[2], 255 - pColor[3] );
 }
 
+static void VGUI_GetScreenScale( float *xscale, float *yscale )
+{
+	// GameUI can paint before HUD_VidInit has populated scrInfo. In that
+	// state its panels use screen pixels; dividing by the zero HUD size
+	// produces NaN offsets and infinite quads. Input must use the same scale.
+	*xscale = *yscale = 1.0f;
+	if( clgame.scrInfo.iWidth > 0 && clgame.scrInfo.iHeight > 0 &&
+		refState.width > 0 && refState.height > 0 )
+	{
+		*xscale = (float)refState.width / clgame.scrInfo.iWidth;
+		*yscale = (float)refState.height / clgame.scrInfo.iHeight;
+	}
+}
+
 static void GAME_EXPORT VGUI_DrawQuad( const vpoint_t *ul, const vpoint_t *lr )
 {
 	if( !ul || !lr )
@@ -218,7 +237,19 @@ static void GAME_EXPORT VGUI_DrawQuad( const vpoint_t *ul, const vpoint_t *lr )
 	float w = lr->point[0] - ul->point[0];
 	float h = lr->point[1] - ul->point[1];
 
-	SPR_AdjustSize( &x, &y, &w, &h );
+	float xscale, yscale;
+	VGUI_GetScreenScale( &xscale, &yscale );
+	x *= xscale;
+	y *= yscale;
+	w *= xscale;
+	h *= yscale;
+	static int quadReports;
+	if( quadReports++ < 4 )
+		Con_Printf( "VGUI trace: quad xywh=%g,%g,%g,%g screen=%dx%d hud=%dx%d color=%u,%u,%u,%u texture=%d enabled=%d\n",
+			x, y, w, h, refState.width, refState.height,
+			clgame.scrInfo.iWidth, clgame.scrInfo.iHeight,
+			vgui.color[0], vgui.color[1], vgui.color[2], vgui.color[3],
+			vgui.bound_texture, vgui.enable_texture );
 
 	if( vgui.enable_texture )
 	{
@@ -243,12 +274,55 @@ static void GAME_EXPORT VGUI_EnableTexture( qboolean enable )
 
 static void GAME_EXPORT VGUI_SetPaintOffset( int x, int y )
 {
-	float fx = x, fy = y, fw = 0.0f, fh = 0.0f;
+	float xscale, yscale;
 
 	Vector2Set( vgui.paint_offset, x, y );
 
-	SPR_AdjustSize( &fx, &fy, &fw, &fh );
-	ref.dllFuncs.R_Set2DOffset( fx, fy );
+	VGUI_GetScreenScale( &xscale, &yscale );
+	ref.dllFuncs.R_Set2DOffset( x * xscale, y * yscale );
+}
+
+/*
+==================
+VGUI_LoadFile
+
+A7 build 65: game-dir relative file loader handed to the VGUI support
+library - the original GameUI resources (.res files under resource/)
+and any other text data it needs. Game dir first, then base dirs: the same
+resolution the original GameUI used for its .res files.
+==================
+*/
+static void *VGUI_LoadFile( const char *path, int *length )
+{
+	fs_offset_t size = 0;
+	byte *buf;
+
+	if( !path )
+	{
+		if( length ) *length = 0;
+		return NULL;
+	}
+
+	buf = FS_LoadFile( path, &size, false );
+	if( !buf )
+	{
+		Con_Reportf( "VGUI_LoadFile: %s not found\n", path );
+		if( length ) *length = 0;
+		return NULL;
+	}
+
+	if( length ) *length = (int)size;
+	return buf;
+}
+
+/*
+==================
+VGUI_FreeFile
+==================
+*/
+static void VGUI_FreeFile( void *buffer )
+{
+	if( buffer ) Mem_Free( buffer );
 }
 
 static void GAME_EXPORT *VGUI_EngineMalloc( size_t size )
@@ -263,10 +337,10 @@ static qboolean GAME_EXPORT VGUI_IsInGame( void )
 
 static void GAME_EXPORT VGUI_GetMousePos( int *_x, int *_y )
 {
-	float xscale = (float)refState.width / (float)clgame.scrInfo.iWidth;
-	float yscale = (float)refState.height / (float)clgame.scrInfo.iHeight;
+	float xscale, yscale;
 	int x, y;
 
+	VGUI_GetScreenScale( &xscale, &yscale );
 	Platform_GetMousePos( &x, &y );
 	*_x = x / xscale;
 	*_y = y / yscale;
@@ -385,6 +459,12 @@ qboolean VGui_LoadProgs( HINSTANCE hInstance )
 		vgui.initialized = vgui.dllFuncs.initialized = true;
 		vgui.from_client = client;
 		Con_Reportf( "%s: initialized legacy API in %s module\n", __func__, client ? "client" : "support" );
+
+		// A7 build 65: hand the .res file services to the support lib.
+		// Assigned after InitAPI so the const template above stays intact
+		// and older support libraries without these slots are unaffected.
+		vgui.dllFuncs.LoadFile = VGUI_LoadFile;
+		vgui.dllFuncs.FreeFile = VGUI_FreeFile;
 
 		return true;
 	}
@@ -627,14 +707,18 @@ void VGui_MouseMove( int x, int y )
 {
 	if( vgui.dllFuncs.MouseMove )
 	{
-		float xscale = (float)refState.width / (float)clgame.scrInfo.iWidth;
-		float yscale = (float)refState.height / (float)clgame.scrInfo.iHeight;
+		float xscale, yscale;
+		VGUI_GetScreenScale( &xscale, &yscale );
 		vgui.dllFuncs.MouseMove( x / xscale, y / yscale );
 	}
 }
 
 void VGui_Paint( void )
 {
+	static int paintReports;
+	if( paintReports++ < 4 )
+		Con_Printf( "VGUI trace: paint callback=%d root=%p textures=%d\n",
+			vgui.dllFuncs.Paint != NULL, VGui_GetPanel(), vgui.texture_id );
 	if( vgui.dllFuncs.Paint )
 		vgui.dllFuncs.Paint();
 
@@ -659,4 +743,3 @@ void VGui_ReportTextInput( const char *text )
 	if( vgui.dllFuncs.TextInput )
 		vgui.dllFuncs.TextInput( text );
 }
-

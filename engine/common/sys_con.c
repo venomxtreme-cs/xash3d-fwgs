@@ -398,6 +398,10 @@ Con_DPrintf
 
 =============
 */
+// A7 build 91: set while a developer line is being printed, so the client
+// console can keep those lines out of the in-game notify (console-only)
+qboolean con_debug_line = false;
+
 void GAME_EXPORT Con_DPrintf( const char *szFmt, ... )
 {
 	va_list args;
@@ -406,7 +410,11 @@ void GAME_EXPORT Con_DPrintf( const char *szFmt, ... )
 		return;
 
 	va_start( args, szFmt );
+	// A7 build 91: flag this line as developer output, so the client
+	// console keeps it out of the in-game notify (console-only)
+	con_debug_line = true;
 	Con_Printfv( true, szFmt, args );
+	con_debug_line = false;
 	va_end( args );
 }
 

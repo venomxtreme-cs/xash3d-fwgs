@@ -1246,6 +1246,11 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 	SV_Init();
 	CL_Init();
 
+#if XASH_ANDROID
+	// A7: "steamfriends" - the Steam friends WebView screen
+	Android_RegisterCommands();
+#endif // XASH_ANDROID
+
 	HTTP_Init();
 	SoundList_Init();
 

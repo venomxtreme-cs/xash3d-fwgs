@@ -182,6 +182,29 @@ static struct http_static_s
 
 poolhandle_t http_mempool;
 
+#if !XASH_DEDICATED
+// A7 build 94: GameUI loading-dialog wiring for the fastdl phase. the
+// wrappers live in engine/client/dll_int/cl_gameui.c and forward to
+// mainui's ConnectionProgress window (it carries the Cancel button)
+void UI_ConnectionProgress_Download( const char *pszFileName, const char *pszServerName, const char *pszServerPath, int iCurrent, int iTotal, const char *comment );
+void UI_ConnectionProgress_DownloadEnd( void );
+
+// batch state of queued game downloads (process files only)
+static int http_dl_total;
+static qboolean http_dl_active;
+
+static int HTTP_CountGameDownloads( void )
+{
+	int count = 0;
+
+	for( httpfile_t *f = http.first_file; f; f = f->next )
+		if( f->process )
+			count++;
+
+	return count;
+}
+#endif // XASH_DEDICATED
+
 static CVAR_DEFINE_AUTO( http_useragent, "", FCVAR_ARCHIVE | FCVAR_PRIVILEGED, "User-Agent string" );
 static CVAR_DEFINE_AUTO( http_autoremove, "1", FCVAR_ARCHIVE | FCVAR_PRIVILEGED, "remove broken files" );
 static CVAR_DEFINE_AUTO( http_timeout, "45", FCVAR_ARCHIVE | FCVAR_PRIVILEGED, "timeout for http downloader" );
@@ -1272,6 +1295,24 @@ void HTTP_Run( void )
 		}
 	}
 
+	#if !XASH_DEDICATED
+	// A7 build 94: every queued game file landed (freed files are unlinked
+	// by HTTP_AutoClean) - take the download box down, the dialog's
+	// resource-loading state takes over again. skip/cancel/http_clear all
+	// converge here too
+	if( http_dl_active && !HTTP_CountGameDownloads( ))
+	{
+		http_dl_active = false;
+		http_dl_total = 0;
+		UI_ConnectionProgress_DownloadEnd();
+#if XASH_ANDROID
+		// A7 build 97: queue drained - fold the loading window's transfer
+		// block away too, the main status line stays
+		CL_LoadingDownloadBlock( NULL, false );
+#endif // XASH_ANDROID
+	}
+#endif // XASH_DEDICATED
+
 	// update progress
 	if( !Host_IsDedicated() && http.progress_count != 0 )
 		Cvar_SetValue( "scr_download", http.progress/http.progress_count * 100 );
@@ -1305,6 +1346,32 @@ void HTTP_AddDownload( const char *path, int size, qboolean process, resource_t 
 		Con_Printf( S_ERROR "no servers to download %s\n", path );
 		return;
 	}
+
+#if !XASH_DEDICATED
+	// A7 build 94: raise the GameUI download box when a game file joins
+	// the fastdl queue - file name, "N of M", the progress bar (linked to
+	// scr_download) and Cancel/Skip stay up for the whole download phase
+	// (user: "show also in download fastdl on server, add button cancel")
+	if( process )
+	{
+		int iCurrent = 0;
+
+		for( httpfile_t *f = http.first_file; f; f = f->next )
+			if( f->process )
+				iCurrent++;
+
+		http_dl_total++;
+		http_dl_active = true;
+
+		UI_ConnectionProgress_Download( path, http.first_server ? http.first_server->host : "",
+			NULL, iCurrent, ( http_dl_total > iCurrent ) ? http_dl_total : iCurrent + 1, "" );
+#if XASH_ANDROID
+		// A7 build 97: same file opens the transfer block of the platform
+		// loading window (the frame feed in cl_main.c keeps the bar moving)
+		CL_LoadingDownloadBlock( path, true );
+#endif // XASH_ANDROID
+	}
+#endif // XASH_DEDICATED
 
 	httpfile_t *httpfile = Mem_Calloc( http_mempool, sizeof( *httpfile ));
 
@@ -1600,6 +1667,18 @@ Clear all queue
 */
 static void HTTP_Clear_f( void )
 {
+#if !XASH_DEDICATED
+	// A7 build 94: a cleared queue ends the download box. the dialog's own
+	// Cancel already moved it out of the download state, so its export
+	// state-guard turns this call into a no-op then
+	if( http_dl_active )
+	{
+		http_dl_active = false;
+		http_dl_total = 0;
+		UI_ConnectionProgress_DownloadEnd();
+	}
+#endif // XASH_DEDICATED
+
 	while( http.first_file )
 	{
 		httpfile_t *file = http.first_file;

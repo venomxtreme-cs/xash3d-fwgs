@@ -28,6 +28,23 @@
     java.lang.String getCallingPackage();
     java.lang.String[] getAssetsList(boolean, java.lang.String);
     android.content.res.AssetManager getAssets(boolean);
+    # A7 build 97: engine-side JNI entry points (loading window) and the
+    # steamfriends screen - called from libxash.so by name
+    void loadingShow(java.lang.String);
+    void loadingStatus(java.lang.String, float);
+    void loadingDownload(java.lang.String, float, java.lang.String, java.lang.String);
+    void loadingHide();
+    void openSteamFriends();
+    native void nativeLoadingCancelled();
+    # A7 round 100: scoreboard logo sources - the activity pulls the
+    # steam photo (avatarFetch) and runs the image chooser (avatarPick);
+    # nativeConsolePrintf reports avatar results in the game console
+    void avatarFetch(long);
+    void avatarPick();
+    # build 101: "avatar_import <path>" from the in-app file dialog -
+    # the activity decodes the chosen file (no Android gallery)
+    void avatarImport(java.lang.String);
+    native void nativeConsolePrintf(java.lang.String);
 }
 
 -keep,includedescriptorclasses,allowoptimization class org.libsdl.app.SDLInputConnection {

@@ -773,6 +773,7 @@ qboolean R_Init( void )
 	Cvar_Get( "r_sprite_lighting", "1", FCVAR_ARCHIVE, "enables sprite lighting (blood etc)" );
 
 	Cvar_Get( "r_drawviewmodel", "1", 0, "draw firstperson weapon model" );
+	Cvar_Get( "viewmodel_fov", "0", FCVAR_ARCHIVE, "firstperson weapon model field of view, 0 - follow world FOV, 70-100" );
 	Cvar_Get( "r_glowshellfreq", "2.2", 0, "glowing shell frequency update" );
 
 	// cvars that are expected to exist by client.dll

@@ -213,5 +213,13 @@ typedef struct  vguiapi_s
 
 	// called from vgui_support, appended later so older support libraries keep working
 	void	(*SetPaintOffset)( int x, int y );	// translates 2D drawing for the everything that's not VGUI, used to simulate GoldSrc behavior which installs matrix in push/popMakeCurrent
+
+	// A7 build 65: original GameUI resources (*.res). The support library
+	// resolves nothing itself - paths are game-dir relative and are loaded
+	// through the engine filesystem (game dir first, the same rule the
+	// original GameUI used for resource/*.res). Appended like the callouts
+	// above so older support libraries keep working.
+	void*	(*LoadFile)( const char *path, int *length );	// NULL on failure
+	void	(*FreeFile)( void *buffer );
 } vguiapi_t;
 #endif // VGUI_API_H

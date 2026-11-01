@@ -55,13 +55,28 @@ static CVAR_DEFINE_AUTO( sv_verbose_heartbeats, "0", 0, "print every heartbeat t
 #define RESOLVE_EXPIRE_SECONDS          (60.0f)  // positive cache: 1 minute
 #define NEGATIVE_RESOLVE_EXPIRE_SECONDS (300.0f) // negative cache: 5 minutes
 
-static size_t NET_BuildMasterServerScanRequest( char *buf, size_t size, uint32_t key, qboolean nat, const char *filter, connprotocol_t proto )
+static size_t NET_BuildMasterServerScanRequest( char *buf, size_t size, uint32_t key, qboolean nat, const char *filter, connprotocol_t proto, const netadr_t *seed )
 {
-	// TODO: pagination and region
-	Q_strncpy( buf, A2M_SCAN_REQUEST, size );
+	// TODO: region
+	// request type and "everywhere" region code
+	buf[0] = A2M_SCAN_REQUEST[0];
+	buf[1] = A2M_SCAN_REQUEST[1];
 
-	char *info = buf + sizeof( A2M_SCAN_REQUEST ) - 1;
-	size_t remaining = size - sizeof( A2M_SCAN_REQUEST );
+	size_t len = 2;
+
+	// pagination seed: GoldSrc masters continue the list right after the
+	// last received address ("a.b.c.d:port"), the zero address requests
+	// the first page. Other protocols always keep the stock zero seed.
+	const char *seedadr = "0.0.0.0:0";
+
+	if( proto == PROTO_GOLDSRC && seed && seed->type == NA_IP )
+		seedadr = NET_AdrToString( *seed );
+
+	Q_strncpy( buf + len, seedadr, size - len );
+	len += Q_strlen( buf + len ) + 1; // include the terminating NUL
+
+	char *info = buf + len;
+	size_t remaining = size - len;
 
 	Q_strncpy( info, filter, remaining );
 
@@ -86,7 +101,7 @@ static size_t NET_BuildMasterServerScanRequest( char *buf, size_t size, uint32_t
 		Info_SetValueForKey( info, "key", temp, remaining );
 	}
 
-	return sizeof( A2M_SCAN_REQUEST ) + Q_strlen( info );
+	return len + Q_strlen( info ) + 1;
 }
 
 /*
@@ -326,15 +341,14 @@ NET_MasterQuery
 qboolean NET_MasterQuery( uint32_t key, qboolean nat, const char *filter )
 {
 	char buf[512];
-	size_t len = NET_BuildMasterServerScanRequest( buf, sizeof( buf ), key, nat, filter, PROTO_CURRENT );
+	size_t len = NET_BuildMasterServerScanRequest( buf, sizeof( buf ), key, nat, filter, PROTO_CURRENT, NULL );
 	qboolean wait = NET_SendToMasters( NS_CLIENT, len, buf, PROTO_CURRENT );
 
-	// goldsrc don't have nat traversal extensions
-	if( !nat )
-	{
-		len = NET_BuildMasterServerScanRequest( buf, sizeof( buf ), 0, false, filter, PROTO_GOLDSRC );
-		wait |= NET_SendToMasters( NS_CLIENT, len, buf, PROTO_GOLDSRC );
-	}
+	// GoldSrc masters have no NAT traversal extension (that key is a dead
+	// xash-only one), but they still list every server, so query them in
+	// both Direct and NAT modes.
+	len = NET_BuildMasterServerScanRequest( buf, sizeof( buf ), 0, false, filter, PROTO_GOLDSRC, NULL );
+	wait |= NET_SendToMasters( NS_CLIENT, len, buf, PROTO_GOLDSRC );
 
 	NET_MasterStaticQuery();
 
@@ -472,6 +486,31 @@ qboolean NET_IsMasterAdr( netadr_t adr, connprotocol_t *proto )
 
 	if( proto )
 		*proto = master->gs ? PROTO_GOLDSRC : PROTO_CURRENT;
+
+	return true;
+}
+
+/*
+========================
+NET_MasterQueryNextPage
+
+Ask one specific master for the next page of the server list,
+seeded with the last address received from it (GoldSrc pagination)
+========================
+*/
+qboolean NET_MasterQueryNextPage( netadr_t from, const netadr_t *seed, const char *filter )
+{
+	master_t *master = NET_GetMasterFromAdr( from );
+
+	// only GoldSrc masters paginate their list
+	if( !master || !master->gs )
+		return false;
+
+	char buf[512];
+	size_t len = NET_BuildMasterServerScanRequest( buf, sizeof( buf ), 0, false, filter, PROTO_GOLDSRC, seed );
+
+	NET_Config( true, false ); // allow remote
+	NET_SendPacket( NS_CLIENT, len, buf, from );
 
 	return true;
 }
@@ -772,6 +811,15 @@ void NET_InitMasters( void )
 	NET_AddMasterStatic( "http://xash.su/server-list" );
 	// FIXME: https raw.githubcontent source
 	// FIXME: cloudflare'd sources both HTTP and HTTPS
+
+	// GoldSource masters for the Find Servers browser (CS 1.6 and other
+	// GoldSrc games): the clean community list first, then Valve's official
+	// GoldSrc query addresses (possibly dormant now, harmless if so).
+	// The UI only ever shows servers that answer the info query, so
+	// unreachable or bogus master entries can't appear in the list.
+	NET_AddMaster( "ms.cs16.net:27010" )->gs = true;
+	NET_AddMaster( "208.64.200.117:27010" )->gs = true;
+	NET_AddMaster( "208.64.200.118:27010" )->gs = true;
 
 	NET_LoadMasters();
 }

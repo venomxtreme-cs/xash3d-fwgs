@@ -91,8 +91,8 @@ static int pfnDrawScaledCharacter( int x, int y, int number, int r, int g, int b
 	rgba_t color = { r, g, b, 255 };
 	int flags = FONT_DRAW_HUD;
 
-	if( hud_utf8.value )
-		SetBits( flags, FONT_DRAW_UTF8 );
+	// raw single-byte text, like the original engine
+	number &= 255;
 
 	if( fabs( g_font_scale - scale ) > 0.1f ||
 		g_scaled_font.hFontTexture != cls.creditsFont.hFontTexture )

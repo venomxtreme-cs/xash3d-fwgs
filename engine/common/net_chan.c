@@ -20,6 +20,17 @@ GNU General Public License for more details.
 #include "protocol.h"
 #if !XASH_DEDICATED
 #include <bzlib.h>
+
+#if !XASH_DEDICATED
+// A7 build 94: GameUI loading-dialog wiring for classic (non-fastdl)
+// file transfers - the wrappers live in engine/client/dll_int/cl_gameui.c
+void UI_ConnectionProgress_Download( const char *pszFileName, const char *pszServerName, const char *pszServerPath, int iCurrent, int iTotal, const char *comment );
+void UI_ConnectionProgress_DownloadEnd( void );
+#if XASH_ANDROID
+// A7 build 97: transfer block of the platform loading window (engine/client/cl_main.c)
+void CL_LoadingDownloadBlock( const char *file, qboolean open );
+#endif // XASH_ANDROID
+#endif // XASH_DEDICATED
 #endif // !XASH_DEDICATED
 
 #define MAKE_FRAGID( id, count )	((( id & 0xffff ) << 16 ) | ( count & 0xffff ))
@@ -1483,6 +1494,38 @@ void Netchan_UpdateProgress( netchan_t *chan )
 	}
 
 	scr_download.value = bestpercent;
+
+	// A7 build 94: a classic dlfile stream gets the GameUI download box
+	// too (the fastdl/http path raises it from HTTP_AddDownload). show on
+	// the first frame of a new file name, drop the box once every needed
+	// file is accounted for (host.downloadcount hits 0 - the block at the
+	// top of this function has already blanked host.downloadfile then)
+	{
+		static char s_dlLast[64];
+
+		if( chan->incomingbufs[FRAG_FILE_STREAM] && host.downloadfile[0] && Q_stricmp( s_dlLast, host.downloadfile ))
+		{
+			int iTotal = ( host.downloadcount > 0 ) ? host.downloadcount : 1;
+
+			Q_strncpy( s_dlLast, host.downloadfile, sizeof( s_dlLast ));
+			UI_ConnectionProgress_Download( host.downloadfile, "", NULL, 0, iTotal, "" );
+#if XASH_ANDROID
+			// A7 build 97: the platform loading window takes the same file
+			// on its transfer bar
+			CL_LoadingDownloadBlock( host.downloadfile, true );
+#endif // XASH_ANDROID
+		}
+		else if( !host.downloadcount && s_dlLast[0] )
+		{
+			s_dlLast[0] = '\0';
+			UI_ConnectionProgress_DownloadEnd();
+#if XASH_ANDROID
+			// A7 build 97: every file accounted for - fold the transfer
+			// block away
+			CL_LoadingDownloadBlock( NULL, false );
+#endif // XASH_ANDROID
+		}
+	}
 #endif // XASH_DEDICATED
 }
 

@@ -3348,6 +3348,29 @@ void R_DrawViewModel( void )
 	pglDepthRange( gldepthmin, gldepthmin + VIEWMODEL_DEPTH_RANGE * ( gldepthmax - gldepthmin ));
 	RI.currentmodel = RI.currententity->model;
 
+	// optional separate FOV for the firstperson weapon model ( NextClient-style )
+	// 90 = classic weapon size at any aspect ratio, lower - bigger weapon, higher - smaller
+	float vmFovScale = 1.0f;
+
+	if( viewmodel_fov->value > 0.0f && RI.rvp.fov_x > 1.0f )
+	{
+		float vmFov = viewmodel_fov->value;
+
+		if( vmFov < 70.0f ) vmFov = 70.0f;
+		else if( vmFov > 100.0f ) vmFov = 100.0f;
+
+		vmFovScale = tan( DEG2RAD( RI.rvp.fov_x ) * 0.5f ) / tan( DEG2RAD( vmFov ) * 0.5f );
+
+		if( fabs( vmFovScale - 1.0f ) > 0.001f )
+		{
+			pglMatrixMode( GL_PROJECTION );
+			pglPushMatrix();
+			pglScalef( vmFovScale, vmFovScale, 1.0f );
+			pglMatrixMode( GL_MODELVIEW );
+		}
+		else vmFovScale = 1.0f;
+	}
+
 	switch( RI.currententity->model->type )
 	{
 	case mod_alias:
@@ -3357,6 +3380,13 @@ void R_DrawViewModel( void )
 		R_StudioSetupTimings();
 		R_StudioDrawModelInternal( RI.currententity, STUDIO_RENDER );
 		break;
+	}
+
+	if( vmFovScale != 1.0f )
+	{
+		pglMatrixMode( GL_PROJECTION );
+		pglPopMatrix();
+		pglMatrixMode( GL_MODELVIEW );
 	}
 
 	// restore depth range

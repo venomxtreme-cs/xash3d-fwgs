@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "client.h"
+#include "platform/platform.h"
 #include "mod_local.h"
 #include "net_encode.h"
 #include "cl_tent.h"
@@ -934,6 +935,13 @@ static void CL_ParseServerData( sizebuf_t *msg, connprotocol_t proto )
 	else if( !cls.demoplayback )
 		Key_SetKeyDest( key_menu );
 
+	// CL_Connect_f parks key_dest on the console while connecting (so the
+	// connection log stays visible), but nothing ever takes it back once
+	// the level is up when a gameui dll is loaded. Hand input to the game
+	// now, otherwise Escape/back opens the console instead of the menu.
+	if( !cl.background && !cls.changedemo )
+		Key_SetKeyDest( key_game );
+
 	// don't reset cursor in background mode
 	if( cl.background )
 		IN_MouseRestorePos();
@@ -1349,6 +1357,120 @@ static void CL_RegisterUserMessage( sizebuf_t *msg, connprotocol_t proto )
 }
 
 /*
+================================================================
+A7 round 100: scoreboard logo sources
+
+Every player's *sid (reunion, dproto and the goldsource steam
+emulators put their steamid there) is turned into the account number
+and forwarded to the platform layer ONCE per session: the activity
+pulls that profile's public photo into media/avatars/av_<account>.png
+and the client scoreboard draws it on that player's row.
+
+Serving works the same on Xash and on GoldSource servers - the value
+comes from userinfo, everything else is local files, and the client
+re-checks a file that is not on disk yet instead of writing it off.
+================================================================
+*/
+
+// "0:905" and "0:0:905" both mean STEAM_0:0:905: the number after the
+// last colon is the id, the one before it the auth bit
+static qboolean CL_SidTailAccount( const char *s, uint64_t *account )
+{
+	const char *last, *num;
+	char ybuf[16];
+	size_t len;
+	int z, y;
+
+	last = strrchr( s, ':' );
+	if( !last || last == s )
+		return false;
+
+	if( sscanf( last + 1, "%d", &z ) != 1 || z < 0 )
+		return false;
+
+	num = last;
+	while( num > s && isdigit( (unsigned char)num[-1] ))
+		num--;
+	len = last - num;
+	if( len <= 0 || len >= sizeof( ybuf ))
+		return false;
+
+	memcpy( ybuf, num, len );
+	ybuf[len] = 0;
+	y = atoi( ybuf );
+	if( y < 0 )
+		return false;
+
+	*account = ( uint64_t )z * 2 + ( y & 1 );
+	return true;
+}
+
+static void CL_AvatarUserInfo( const char *sid )
+{
+#if XASH_ANDROID
+	static uint64_t fetched[64];
+	static int fetched_count;
+	uint64_t id64, account;
+	int i;
+
+	if( COM_StringEmpty( sid ))
+		return;
+
+	if( !Q_strnicmp( sid, "STEAM_", 6 ))
+	{
+		if( !CL_SidTailAccount( sid + 6, &account ))
+			return;
+	}
+	else if( sid[0] == '[' )
+	{
+		int y;
+
+		if( sscanf( sid, "[U:1:%d]", &y ) != 1 || y < 0 )
+			return;
+		account = ( uint64_t )y;
+	}
+	else if( Q_isdigit( sid ) && strchr( sid, ':' ))
+	{
+		if( !CL_SidTailAccount( sid, &account ))
+			return;
+	}
+	else if( Q_isdigit( sid ))
+	{
+		// bare steamid64 (reunion puts it into *sid) or account number
+		account = ( uint64_t )strtoull( sid, NULL, 10 );
+
+		if( account > 0xFFFFFFFFULL )
+		{
+			if( account <= 76561197960265728ULL )
+				return;
+			account -= 76561197960265728ULL;
+		}
+	}
+	else
+	{
+		return;
+	}
+
+	if( account == 0 || account > 0xFFFFFFFFULL )
+		return;
+
+	id64 = 76561197960265728ULL + account;
+
+	for( i = 0; i < fetched_count; i++ )
+	{
+		if( fetched[i] == id64 )
+			return;
+	}
+
+	if( fetched_count < ( int )( sizeof( fetched ) / sizeof( fetched[0] )))
+		fetched[fetched_count++] = id64;
+
+	Con_DPrintf( "avatar: fetching steam photo for account %u\n", ( unsigned )account );
+	Android_AvatarFetch( id64 );
+#endif // XASH_ANDROID
+}
+
+/*
 ================
 CL_UpdateUserinfo
 
@@ -1386,6 +1508,12 @@ static void CL_UpdateUserinfo( sizebuf_t *msg, connprotocol_t proto )
 		player->topcolor = Q_atoi( Info_ValueForKey( player->userinfo, "topcolor" ));
 		player->bottomcolor = Q_atoi( Info_ValueForKey( player->userinfo, "bottomcolor" ));
 		player->spectator = Q_atoi( Info_ValueForKey( player->userinfo, "*hltv" ));
+
+		// A7 round 100: this player's steam photo for the scoreboard,
+		// fetched once per steamid (both protocols carry userinfo the
+		// same way, so Xash and GoldSource servers work alike)
+		CL_AvatarUserInfo( Info_ValueForKey( player->userinfo, "*sid" ));
+
 		MSG_ReadBytes( msg, player->hashedcdkey, sizeof( player->hashedcdkey ), sizeof( player->hashedcdkey ));
 
 		if( proto == PROTO_GOLDSRC && ( COM_StringEmpty( player->userinfo ) || COM_StringEmpty( player->name )))
@@ -2634,6 +2762,16 @@ void CL_ParseServerMessage( sizebuf_t *msg )
 				cls.connect_time = MAX_HEARTBEAT;
 				memset( &cls.bandwidth_test, 0, sizeof( cls.bandwidth_test ));
 				cls.connect_retry = 0;
+
+				// build 101: a remote server map change goes straight to
+				// the GoldSource-style loading screen - without it the
+				// client sat in the in-between connect states where the
+				// legacy Xash console (with its version line) surfaced
+				// instead of the loading dialog ("when server changing map
+				// it show console xash version"). local listen servers get
+				// their plaque from the host_state changelevel step
+				if( !cls.demoplayback && cls.state == ca_connecting && !cls.disable_screen )
+					SCR_BeginLoadingPlaque( false );
 			}
 			break;
 		case svc_sound:

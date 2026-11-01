@@ -1401,7 +1401,17 @@ static float Touch_DrawCharacter( float x, float y, int number, float size )
 	ref.dllFuncs.R_DrawStretchPic( TO_SCRN_X( x ), TO_SCRN_Y( y ), SCRN_WIDTH( width ), SCRN_WIDTH( height ),
 		s1, t1, s2, t2, cls.creditsFont.hFontTexture );
 
-	return width;
+	// A7 build 108: advance by the REAL glyph advance, not the atlas cell
+	// rect. The TrueType TTF loader packs every glyph into a uniform grid
+	// cell (widest advance + padding), so advancing by the cell gave all
+	// touch text a wide monospaced look ("G a m e  S e t t i n g s").
+	// charWidths holds the proportional advance; the bitmap loaders fold
+	// the font scale into charWidths while setting font->scale, so dividing
+	// it back out keeps their advance pixel-identical to the old cell math.
+	{
+		float fscale = cls.creditsFont.scale > 0.0f ? cls.creditsFont.scale : 1.0f;
+		return ( cls.creditsFont.charWidths[number & 255] / fscale ) / 1024.0f * size;
+	}
 }
 
 static float Touch_DrawText( float x1, float y1, float x2, float y2, const char *s, byte *color, float size )

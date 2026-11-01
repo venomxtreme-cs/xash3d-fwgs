@@ -220,9 +220,16 @@ static void FS_InitGameInfo( gameinfo_t *GameInfo, const char *gamedir, qboolean
         }
 
         GameInfo->max_edicts     = DEFAULT_MAX_EDICTS; // default value if not specified
-        GameInfo->max_tents      = 500;
+        // Effect-pool defaults. These are the client-side pools that temp
+        // entities (blood/explosion/sparks), particles and tracers allocate
+        // from. The old defaults (500/4096) were the documented *minimums*
+        // and a busy Zombie-Plague round (many simultaneous frost/blood/explosion
+        // effects plus tracer fire) exhausted them, dropping effects and spamming
+        // "Overflow" every frame. Raised to give real headroom while staying
+        // well inside the compile-time maxima (2048 tents / 131072 particles).
+        GameInfo->max_tents      = 2048;
         GameInfo->max_beams      = 128;
-        GameInfo->max_particles  = 4096;
+        GameInfo->max_particles  = 16384;
         GameInfo->version        = 1.0f;
 
         GameInfo->quicksave_aged_count = SAVE_AGED_COUNT;

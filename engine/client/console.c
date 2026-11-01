@@ -39,6 +39,53 @@ static int g_codepage = 0;
 
 static qboolean g_messagemode_privileged = true;
 
+// A7 build 91: set while a developer (Con_DPrintf) line is being printed, so
+// Con_AddLine can keep those lines out of the in-game notify - they used to
+// pop up over the radar/HUD whenever dev mode was on ("Firing: ...")
+extern qboolean con_debug_line;
+
+// A7 build 91: floating console window (GoldSource-style: title bar, log
+// view, scrollbar, input line + Submit) shown over the main menu and over
+// the paused game. the legacy full-screen console is still used by -console
+// and while loading.
+static struct
+{
+	qboolean	visible;		// window is on screen
+	qboolean	focused;		// keyboard goes to the input line
+	qboolean	user_closed;	// user hid it: suppress auto-open until reset
+	qboolean	dragging;		// dragging by the title bar
+	qboolean	scrolling;		// dragging the log area to scroll it
+	qboolean	clicked;		// a press inside the window was consumed
+	int	x, y, w, h;		// window rect, render coords
+	int	drag_x, drag_y;	// grab point inside the window
+	int	scroll_y;		// cursor y where the log drag started
+	int	backscroll;		// log scrollback, lines up from the bottom
+	int	mouse_x, mouse_y;	// last known cursor position
+	qboolean	mouse_in;		// cursor is over the window
+} conwin;
+
+// A7 build 92: the floating window draws with the crisp creditsfont (the
+// same proportional font the HUD/message text uses) instead of the chunky
+// console bitmap font; NULL while the legacy full-screen console draws
+static cl_font_t	*conwin_font;
+
+// A7 build 105: GoldSource-style dropdown under the input line - every
+// matching command/cvar while the user types (user: "if i type something
+// it show cvars"). refreshed on each edit, drawn + clickable by the window.
+#define CONWIN_SUGGEST_ROWS	10	// rows before the "..." overflow row
+static char	conwin_suggest[CONWIN_SUGGEST_ROWS][CON_SUGGEST_NAME];
+static int	conwin_suggestTotal;	// matches, may exceed the stored rows
+
+// defined below (they need the `con` state, which is declared further down)
+static cl_font_t *Con_WindowFont( void );
+static cl_font_t *Con_WinFont( void );
+
+// defined in the window section, called on every edit of the input line
+static void Con_WindowSuggestUpdate( void );
+
+// defined further below in the drawing section; the window log view uses it
+static int Con_DrawConsoleLine( const wrect_t *safe, int y, int lineno );
+
 #define CON_TIMES		4	// notify lines
 #define CON_MAX_TIMES	64	// notify max lines
 #define COLOR_DEFAULT	'7'
@@ -267,17 +314,19 @@ void Con_ToggleConsole_f( void )
 	if( !host.allow_console || UI_CreditsActive( ))
 		return; // disabled
 
-	SCR_EndLoadingPlaque();
-
-	// show console only in game, from menu, or to close console
-	if( cls.state != ca_active && cls.key_dest != key_menu && cls.key_dest != key_console )
-		return;
-
-	Con_ClearTyping();
-	Con_ClearNotify();
-
+	// A7 build 91: the legacy full-screen console (-console / desktop dev
+	// work) keeps the old toggle behaviour untouched
 	if( cls.key_dest == key_console )
 	{
+		SCR_EndLoadingPlaque();
+
+		// show console only in game, from menu, or to close console
+		if( cls.state != ca_active && cls.key_dest != key_menu && cls.key_dest != key_console )
+			return;
+
+		Con_ClearTyping();
+		Con_ClearNotify();
+
 		// closing console
 		if( cls.state != ca_active || Con_BackgroundMapActive( ))
 		{
@@ -290,13 +339,30 @@ void Con_ToggleConsole_f( void )
 			// in game - return to game
 			UI_SetActiveMenu( false );
 		}
+		return;
 	}
-	else
-	{
-		// opening console - just switch key_dest, don't call UI_SetActiveMenu
-		// which would reset menu state via on_menu_hide()
-		Key_SetKeyDest( key_console );
-	}
+
+	// A7 build 110: the floating window is RETIRED - the console is the
+	// CLASSIC full-width top console again (user decision: "change console
+	// fully" -> classic full-width top console sliding from the top). No
+	// console while the loading plaque owns the screen (connect/download
+	// keeps its loading screen).
+	if( cls.disable_screen )
+		return;
+
+	if( conwin.visible )
+		Con_WindowClose( false ); // safety: never leave an old window latched
+
+	Con_ClearTyping();
+	Con_ClearNotify();
+
+	// Drop into the classic console: Con_RunConsole animates
+	// con.showlines/con.vislines and Con_DrawConsole renders
+	// Con_DrawSolidConsole whenever key_dest == key_console - the same
+	// machinery -console/-dev work always used. Toggling again runs the
+	// key_console branch at the top of this function and returns to
+	// menu/game exactly as before.
+	Key_SetKeyDest( key_console );
 }
 
 /*
@@ -442,7 +508,9 @@ static void Con_AddLine( const char *line, int length, qboolean newline )
 		p = &CON_LINES_LAST();
 		p->start = putpos;
 		p->length = length;
-		p->addtime = cl.time;
+		// A7 build 91: developer lines get addtime 0, so Con_DrawNotify
+		// never shows them over the HUD (they stay console-only)
+		p->addtime = con_debug_line ? 0.0 : cl.time;
 	}
 	else
 	{
@@ -451,7 +519,10 @@ static void Con_AddLine( const char *line, int length, qboolean newline )
 		memcpy( putpos, line, length - 1 );
 		p->length = Q_strlen( p->start );
 		putpos[p->length] = '\0';
-		p->addtime = cl.time;
+		// A7 build 91: a dev line continuing an existing line must not
+		// revive it for the notify either
+		if( !con_debug_line )
+			p->addtime = cl.time;
 		p->length++;
 	}
 }
@@ -583,16 +654,18 @@ static void Con_LoadConsoleFont( int fontNumber, cl_font_t *font )
 	else
 	{
 		string path;
-		dword crc = 0;
 
-		// replace default fonts.wad textures by current charset's font
-		if( !CRC32_File( &crc, "fonts.wad" ) || crc == 0x3c0a0029 )
+		// A7-full-port: always prefer the bundled full-charset font
+		// (font0/1/2_<charset>.fnt from the APK assets) instead of gating it
+		// behind the fonts.wad CRC check. The game data ships a non-default
+		// fonts.wad whose FONT* lumps render untidy through the wad load path
+		// and lose glyphs such as '<', '=', '/'. The wad fonts and the bundled
+		// .fnt files are byte-identical (cp1251), so nothing is lost; the wad
+		// is only used when the charset .fnt file is missing.
+		if( Q_snprintf( path, sizeof( path ),
+			"font%i_%s.fnt", fontNumber, Cvar_VariableString( "con_charset" )) > 0 )
 		{
-			if( Q_snprintf( path, sizeof( path ),
-				"font%i_%s.fnt", fontNumber, Cvar_VariableString( "con_charset" )) > 0 )
-			{
-				success = Con_LoadVariableWidthFont( path, font, scale, &con_fontrender, TF_FONT|TF_NEAREST );
-			}
+			success = Con_LoadVariableWidthFont( path, font, scale, &con_fontrender, TF_FONT|TF_NEAREST );
 		}
 
 		if( !success )
@@ -651,7 +724,29 @@ int Con_UtfProcessCharForce( int in )
 	// TODO: get rid of global state where possible
 	static utfstate_t state = { 0 };
 
+	// a utf-8 sequence can only continue with a continuation byte. anything
+	// else means the previous lead byte was actually a classic single-byte
+	// character: drop the stale state and render this byte as-is, so a char
+	// like '<' after it is never swallowed or mangled
+	if( state.len )
+	{
+		if( in < 0x80 || in > 0xBF )
+		{
+			memset( &state, 0, sizeof( state ));
+			return in;
+		}
+	}
+	else if(( in >= 0x80 && in <= 0xBF ) || in >= 0xF8 )
+	{
+		// stray continuation byte or invalid lead byte:
+		// classic single-byte character, pass it through
+		return in;
+	}
+
 	uint32_t ch = Q_DecodeUTF8( &state, in );
+
+	if( !ch )
+		return 0; // waiting for continuation bytes
 
 	if( g_codepage == 1251 )
 		return Q_UnicodeToCP1251( ch );
@@ -668,6 +763,15 @@ int GAME_EXPORT Con_UtfProcessChar( int in )
 
 	// otherwise, decode it and convert to selected codepage
 	return Con_UtfProcessCharForce( in );
+}
+
+// A7 build 103: the HUD TrueType atlas must rasterize the same single-byte
+// codepage this function converts HUD strings into (cp1251 by default),
+// otherwise every byte >= 127 lands in an empty glyph cell and does not
+// show (user: "there's fonts missing which is points not showing in hud")
+int Con_GetCodepage( void )
+{
+	return g_codepage;
 }
 
 /*
@@ -771,7 +875,8 @@ compute string width and height in screen pixels
 */
 void GAME_EXPORT Con_DrawStringLen( const char *pText, int *length, int *height )
 {
-	CL_DrawStringLen( con.curFont, pText, length, height, FONT_DRAW_UTF8 );
+	// raw single-byte text, like the original engine
+	CL_DrawStringLen( con.curFont, pText, length, height, 0 );
 }
 
 /*
@@ -783,7 +888,8 @@ client version of routine
 */
 int Con_DrawString( int x, int y, const char *string, const rgba_t setColor )
 {
-	return CL_DrawString( x, y, string, setColor, con.curFont, FONT_DRAW_UTF8 );
+	// raw single-byte text, like the original engine
+	return CL_DrawString( x, y, string, setColor, con.curFont, 0 );
 }
 
 /*
@@ -1274,9 +1380,12 @@ static void Field_CharEvent( field_t *edit, int ch )
 /*
 ==================
 Field_DrawInputLine
+
+A7 build 92: font is optional - the floating console window passes the
+window font (creditsfont) so the input row matches the rest of the window
 ==================
 */
-static int Field_DrawInputLine( int x, int y, const field_t *edit, byte alpha, qboolean cursor )
+static int Field_DrawInputLine( int x, int y, const field_t *edit, byte alpha, qboolean cursor, cl_font_t *font )
 {
 	char str[MAX_SYSPATH];
 	rgba_t colorDefault;
@@ -1284,24 +1393,27 @@ static int Field_DrawInputLine( int x, int y, const field_t *edit, byte alpha, q
 	const int drawLen = bound( 0, edit->widthInChars, sizeof( str ));
 	const int cursorCharPos = bound( 0, edit->cursor - prestep, sizeof( str ));
 
+	if( !font ) font = con.curFont;
+	if( !font ) return 0;
+
 	memcpy( colorDefault, g_color_table[ColorIndex( COLOR_DEFAULT )], 3 * sizeof( colorDefault[0] ));
 	colorDefault[3] = alpha;
 
 	Q_strncpy( str, edit->buffer + prestep, drawLen );
 
 	// draw it
-	CL_DrawString( x, y, str, colorDefault, con.curFont, FONT_DRAW_UTF8 );
+	CL_DrawString( x, y, str, colorDefault, font, 0 );
 
 	// calc cursor position
 	str[cursorCharPos] = 0;
 	int curPos;
-	CL_DrawStringLen( con.curFont, str, &curPos, NULL, FONT_DRAW_UTF8 );
+	CL_DrawStringLen( font, str, &curPos, NULL, 0 );
 
 	// draw the cursor
 	if( !cursor || (int)( host.realtime * 4 ) & 1 )
 		return curPos; // off blink
 
-	CL_DrawCharacter( x + curPos, y, host.key_overstrike ? '|' : '_', colorDefault, con.curFont, 0 );
+	CL_DrawCharacter( x + curPos, y, host.key_overstrike ? '|' : '_', colorDefault, font, 0 );
 
 	return curPos;
 }
@@ -1489,6 +1601,11 @@ CONSOLE LINE EDITING
 */
 static void Con_InputCompletion( void )
 {
+	// A7 build 106: the floating window no longer runs its dropdown from
+	// here - Con_WindowKey/Con_CharEvent call Con_WindowSuggestUpdate()
+	// directly, so window typing never touches the ghost completion path
+	// (the first typed character froze the game in build 105)
+
 	if( !con_showcompletion.value )
 		return;
 
@@ -1678,6 +1795,782 @@ void Key_Message( int key )
 /*
 ==============================================================================
 
+A7 BUILD 91: FLOATING CONSOLE WINDOW
+
+GoldSource-style floating window (title bar with a close box, log view with
+a scrollbar, input line with Submit) drawn over the main menu and over the
+paused game. key_dest stays key_menu, so the menu stays live behind it; the
+focused flag routes the keyboard to the input line.
+
+==============================================================================
+*/
+// A7 build 92: the font the window *is laid out with* - valid anywhere,
+// not only while the window draws (hit-rects must match the rendered text)
+static cl_font_t *Con_WindowFont( void )
+{
+	if( cls.creditsFont.valid )
+		return &cls.creditsFont;
+	return con.curFont;
+}
+
+// font actually used for the drawn text: the window font while the
+// floating window renders, the console font for the legacy full console
+static cl_font_t *Con_WinFont( void )
+{
+	if( conwin_font )
+		return conwin_font;
+	return con.curFont;
+}
+
+// A7 build 93: top-left column of the main menu - the window sits ABOVE
+// the first menu row ("Random server"), like the reference:
+//     Console   <- window
+//     Random Server
+// (user: "console menu that in main menu put in up of random server")
+static void Con_WindowPlaceAtCorner( void )
+{
+	int	margin = Q_max( 8, refState.width / 48 );
+	int	bottom;
+
+	// A7 build 106: the user says the console is far too small for the
+	// reference (geometry differs) - about 58% of the screen wide and
+	// half of it tall
+	conwin.w = refState.width * 58 / 100;
+	conwin.h = refState.height * 50 / 100;
+
+	// the menu list is laid out in a 1280x768 virtual space; the first row
+	// (Random server) sits at virtual y=472 => 472/768 = 61.5% of height.
+	// stop the window a little above that so it never covers the row
+	bottom = refState.height * 58 / 100;
+
+	conwin.x = margin;
+	conwin.y = bottom - conwin.h;
+}
+
+static void Con_WindowLayout( void )
+{
+	if( conwin.w <= 0 ) conwin.w = refState.width >> 1;
+	if( conwin.h <= 0 ) conwin.h = refState.height * 50 / 100;
+
+	conwin.x = bound( 0, conwin.x, Q_max( 0, refState.width - conwin.w ));
+	conwin.y = bound( 0, conwin.y, Q_max( 0, refState.height - conwin.h ));
+}
+
+static void Con_WindowClampScroll( void )
+{
+	conwin.backscroll = bound( 0, conwin.backscroll, Q_max( 0, CON_LINES_COUNT - 1 ));
+}
+
+static void Con_WindowTitleRect( int *x, int *y, int *w, int *h )
+{
+	cl_font_t	*font = Con_WindowFont();
+
+	if( x ) *x = conwin.x;
+	if( y ) *y = conwin.y;
+	if( w ) *w = conwin.w;
+	if( h ) *h = font ? font->charHeight + 8 : 24;
+}
+
+static void Con_WindowCloseRect( int *x, int *y, int *w, int *h )
+{
+	int	barH;
+
+	Con_WindowTitleRect( NULL, y, NULL, &barH );
+	*h = barH - 8;
+	*w = *h;
+	*x = conwin.x + conwin.w - *w - 4;
+	*y += 4;
+}
+
+static void Con_WindowSubmitRect( int *x, int *y, int *w, int *h )
+{
+	cl_font_t	*font = Con_WindowFont();
+	int	len = 0;
+	int	pad = font ? font->charWidths[' '] : 8;
+
+	if( font ) CL_DrawStringLen( font, "Submit", &len, NULL, 0 );
+	*w = len + pad * 2;
+	*h = ( font ? font->charHeight : 12 ) + 6;
+	*x = conwin.x + conwin.w - *w - 5;
+	*y = conwin.y + conwin.h - *h - 5;
+}
+
+// A7 build 105: rebuild the dropdown matches for what is currently typed
+// A7 build 106: matches come from the flat name index (built once when the
+// window opens), so this is a bounded array scan per keystroke
+static void Con_WindowSuggestUpdate( void )
+{
+	static int	suggestLog = 0;
+
+	if( !conwin.visible || !conwin.focused )
+	{
+		conwin_suggestTotal = 0;
+		return;
+	}
+
+	conwin_suggestTotal = Con_GetCompletionMatches( con.input.buffer,
+		conwin_suggest, CONWIN_SUGGEST_ROWS );
+
+	// A7 build 106: a few markers only, so any remaining typing stall can
+	// be attributed from the user's console screenshot
+	if( suggestLog < 6 )
+	{
+		suggestLog++;
+		Con_DPrintf( "[A7] suggest: \"%s\" -> %d matches (index %d)\n",
+			con.input.buffer, conwin_suggestTotal, Con_SuggestBuildIndex( ));
+	}
+}
+
+// A7 build 107: typing-freeze trace. the budget is zero all the time, so
+// nothing is printed during normal play; the first printable character that
+// reaches the window input line arms it, and every marker afterwards (char
+// path, sdl text path, per-frame console draw) burns one line until it runs
+// out. engine.log then shows the exact step where the stall happens (user:
+// "if i type somethings nothings will work like freeze").
+static int	a7TraceBudget = 0;
+
+void Con_A7Trace( const char *msg )
+{
+	if( a7TraceBudget <= 0 )
+		return;
+
+	a7TraceBudget--;
+	Con_DPrintf( "%s", msg );
+}
+
+// rows actually painted: the matched names plus a "..." row when more match
+static int Con_WindowSuggestRows( void )
+{
+	if( conwin_suggestTotal <= 0 )
+		return 0;
+
+	return Q_min( conwin_suggestTotal, CONWIN_SUGGEST_ROWS ) +
+		(( conwin_suggestTotal > CONWIN_SUGGEST_ROWS ) ? 1 : 0 );
+}
+
+// dropdown rect: hangs under the input row from the left edge, like the
+// reference picture (its width stops before the Submit button)
+static void Con_WindowSuggestRect( int *x, int *y, int *w, int *h )
+{
+	cl_font_t	*font = Con_WindowFont();
+	int	pad = font ? font->charWidths[' '] : 8;
+	int	charH = font ? font->charHeight : 12;
+	int	subW = 0, rows = Con_WindowSuggestRows();
+
+	Con_WindowSubmitRect( NULL, NULL, &subW, NULL );
+
+	if( x ) *x = conwin.x + pad;
+	if( y )
+	{
+		int	top = conwin.y + conwin.h + 4;
+		int	hh = rows * ( charH + 4 ) + 4;
+
+		// never hang past the bottom of the screen (draw and the click
+		// test must agree, so the clamp lives here)
+		if( top + hh > refState.height - 4 )
+			top = Q_max( 4, refState.height - 4 - hh );
+		*y = top;
+	}
+	if( w ) *w = Q_max( 80, conwin.w - pad * 2 - subW );
+	if( h ) *h = rows * ( charH + 4 ) + 4;
+}
+
+// click on a dropdown row: put the name into the input line and keep typing
+static void Con_WindowSuggestPick( int row )
+{
+	const char	*name = conwin_suggest[row];
+
+	con.input.buffer[0] = 0;
+	Q_strncpy( con.input.buffer, name, sizeof( con.input.buffer ));
+	Q_strncat( con.input.buffer, " ", sizeof( con.input.buffer ));
+	con.input.cursor = Q_strlen( con.input.buffer );
+	con.input.scroll = 0;
+	Con_ClearField( &con.input_completion );
+
+	// the picked word is finished (trailing space) so the list closes
+	Con_WindowSuggestUpdate();
+}
+
+// submit the current input line (the Submit button and ENTER both land here)
+static void Con_WindowSubmit( void )
+{
+	// backslash text are commands, else chat
+	if( con.input.buffer[0] == '\\' || con.input.buffer[0] == '/' )
+		Cbuf_AddText( con.input.buffer + 1 ); // skip backslash
+	else Cbuf_AddText( con.input.buffer ); // valid command
+	Cbuf_AddText( "\n" );
+
+	// echo to console
+	Con_Printf( ">%s\n", con.input.buffer );
+
+	COM_RemoveLineFeed( con.input.buffer, sizeof( con.input.buffer ));
+	Con_HistoryAppend( &con.history, &con.input );
+
+	Con_ClearField( &con.input );
+	con.input.widthInChars = con.linewidth;
+	Con_ClearField( &con.input_completion );
+	conwin_suggestTotal = 0; // A7 build 105: dropdown dies with the line
+
+	conwin.backscroll = 0; // follow the new output
+}
+
+void Con_WindowOpen( qboolean force )
+{
+	// A7 build 110: RETIRED - the classic full-width top console replaced
+	// this (see Con_ToggleConsole_f). Kept as a no-op so
+	// Con_ToggleConsole/Con_WindowAutoOpen (menu open/close hooks) compile
+	// and stop latching the floating window on.
+	(void)force;
+}
+
+void Con_WindowClose( qboolean userInitiated )
+{
+	if( !conwin.visible )
+		return;
+
+	conwin.visible = false;
+	conwin.focused = false;
+	conwin.dragging = false;
+	conwin.scrolling = false;
+	conwin.clicked = false;
+
+	// remember the user's choice until the next connect
+	if( userInitiated )
+		conwin.user_closed = true;
+}
+
+// called by UI_SetActiveMenu: the window follows the menu
+void Con_WindowAutoOpen( qboolean menuOpen )
+{
+	if( menuOpen )
+	{
+		if( !conwin.user_closed && !cls.disable_screen )
+			Con_WindowOpen( true );
+	}
+	else Con_WindowClose( false );
+}
+
+// a fresh session forgets the user's close and hides the window
+void Con_WindowReset( void )
+{
+	conwin.visible = false;
+	conwin.focused = false;
+	conwin.user_closed = false;
+	conwin.dragging = false;
+	conwin.scrolling = false;
+	conwin.clicked = false;
+	conwin.backscroll = 0;
+}
+
+qboolean Con_WindowVisible( void )
+{
+	return conwin.visible;
+}
+
+qboolean Con_WindowFocused( void )
+{
+	return conwin.visible && conwin.focused;
+}
+
+void Con_WindowSetMouse( int x, int y )
+{
+	if( conwin.dragging )
+	{
+		conwin.x = bound( 0, x - conwin.drag_x, Q_max( 0, refState.width - conwin.w ));
+		conwin.y = bound( 0, y - conwin.drag_y, Q_max( 0, refState.height - conwin.h ));
+	}
+
+	// A7 build 92: touch drag-scroll of the log - dragging the sheet down
+	// brings the older (higher) lines into the view, dragging up returns
+	// to the newest output (wheel and PGUP/PGDN keep working too)
+	if( conwin.scrolling )
+	{
+		cl_font_t	*font = Con_WindowFont();
+		int		charH = font ? font->charHeight : 16;
+		int		delta = y - conwin.scroll_y;
+
+		if( charH > 0 && abs( delta ) >= charH )
+		{
+			conwin.backscroll += delta / charH;
+			conwin.scroll_y += ( delta / charH ) * charH;
+			Con_WindowClampScroll();
+		}
+	}
+
+	conwin.mouse_x = x;
+	conwin.mouse_y = y;
+	conwin.mouse_in = conwin.visible && x >= conwin.x && x < conwin.x + conwin.w &&
+		y >= conwin.y && y < conwin.y + conwin.h;
+}
+
+static qboolean Con_WindowInRect( int x, int y, int w, int h )
+{
+	return conwin.mouse_x >= x && conwin.mouse_x < x + w &&
+		conwin.mouse_y >= y && conwin.mouse_y < y + h;
+}
+
+// A7 build 91: clicks, title-bar drag and wheel over the window are
+// consumed here; everything else falls through to the menu behind it
+qboolean Con_WindowMouseEvent( int key, qboolean down )
+{
+	int	x, y, w, h;
+
+	// A7 build 110: CLASSIC TOP CONSOLE input row. A tap on the bottom
+	// input band (same geometry Con_DrawInput uses: bottom minus two
+	// character rows) raises the Android keyboard + focuses editing.
+	// The retired floating window never reliably fired its own enable:
+	// its input row overlapped the log-scroll band, the enable call never
+	// ran once in a real session (device log: zero "en=1"), and typed
+	// characters never reached the engine.
+	if( !conwin.visible && cls.key_dest == key_console && down && key == K_MOUSE1 && con.curFont )
+	{
+		int	inputY = refState.height - ( con.curFont->charHeight * 2 );
+
+		if( conwin.mouse_y >= inputY - 2 )
+		{
+			Con_DPrintf( "[A7] ev: classic input row tapped -> text input ON\n" );
+			Key_EnableTextInput( true, true );
+			return true;
+		}
+	}
+
+	if( !conwin.visible || cls.key_dest != key_menu )
+		return false;
+
+	// wheel scrolls the log when the cursor is over the window
+	if( key == K_MWHEELUP || key == K_MWHEELDOWN )
+	{
+		if( !conwin.mouse_in )
+			return false;
+
+		if( down )
+		{
+			conwin.backscroll += ( key == K_MWHEELUP ) ? 3 : -3;
+			Con_WindowClampScroll();
+		}
+		return true;
+	}
+
+	if( key != K_MOUSE1 )
+		return false;
+
+	if( down )
+	{
+		int	titleH;
+
+		// A7 build 105: a click on the completion dropdown - the rows hang
+		// BELOW the window, outside its own hit rect, so test them first
+		if( conwin.focused && conwin_suggestTotal > 0 && con.input.buffer[0] )
+		{
+			int	sx, sy, sw, sh;
+			int	rowH, rowCount = Con_WindowSuggestRows();
+
+			Con_WindowSuggestRect( &sx, &sy, &sw, &sh );
+			rowH = ( Con_WindowFont() ? Con_WindowFont()->charHeight : 12 ) + 4;
+
+			if( conwin.mouse_x >= sx && conwin.mouse_x < sx + sw &&
+				conwin.mouse_y >= sy && conwin.mouse_y < sy + sh )
+			{
+				int	row = ( conwin.mouse_y - sy - 2 ) / rowH;
+
+				conwin.clicked = true;
+				conwin.focused = true;
+
+				if( row >= 0 && row < rowCount && row < conwin_suggestTotal )
+					Con_WindowSuggestPick( row );
+				else Con_WindowSuggestUpdate(); // clicked the "..." row
+
+				return true;
+			}
+		}
+
+		if( !conwin.mouse_in )
+		{
+			// a click outside goes to the menu and drops our focus
+			conwin.focused = false;
+			conwin.clicked = false;
+			return false;
+		}
+
+		conwin.clicked = true;
+		conwin.focused = true;
+
+		Con_WindowCloseRect( &x, &y, &w, &h );
+		if( Con_WindowInRect( x, y, w, h ))
+		{
+			Con_WindowClose( true );
+			return true;
+		}
+
+		Con_WindowSubmitRect( &x, &y, &w, &h );
+		if( Con_WindowInRect( x, y, w, h ))
+		{
+			Con_WindowSubmit();
+			return true;
+		}
+
+		// A7 build 92: a press anywhere in the log area starts a touch
+		// drag-scroll (the user could not scroll the log at all on touch)
+		Con_WindowTitleRect( NULL, NULL, NULL, &titleH );
+		if( conwin.mouse_y >= conwin.y + titleH && conwin.mouse_y < y - 3 )
+		{
+			conwin.scrolling = true;
+			conwin.scroll_y = conwin.mouse_y;
+			return true;
+		}
+
+		// click on the input row: raise the on-screen keyboard on touch
+		if( conwin.mouse_y >= y - 2 )
+			Key_EnableTextInput( true, true );
+
+		// grab by the title bar to drag the window
+		Con_WindowTitleRect( &x, &y, &w, &h );
+		if( conwin.mouse_y >= y && conwin.mouse_y < y + h )
+		{
+			conwin.dragging = true;
+			conwin.drag_x = conwin.mouse_x - conwin.x;
+			conwin.drag_y = conwin.mouse_y - conwin.y;
+		}
+
+		return true;
+	}
+
+	// release ends a consumed press (and any drag)
+	if( conwin.clicked || conwin.dragging || conwin.scrolling )
+	{
+		conwin.dragging = false;
+		conwin.scrolling = false;
+		conwin.clicked = false;
+		return true;
+	}
+
+	return false;
+}
+
+// A7 build 91: keyboard while the window is focused (ENTER submits, TAB
+// completes, arrows walk the history, PGUP/PGDN scroll the log, everything
+// else edits the input line)
+void Con_WindowKey( int key )
+{
+	if( !conwin.visible )
+		return;
+
+	if( key == K_PGUP || key == K_DPAD_UP )
+	{
+		conwin.backscroll += 3;
+		Con_WindowClampScroll();
+		return;
+	}
+
+	if( key == K_PGDN || key == K_DPAD_DOWN )
+	{
+		conwin.backscroll -= 3;
+		Con_WindowClampScroll();
+		return;
+	}
+
+	if( key == K_HOME )
+	{
+		conwin.backscroll = Q_max( 0, CON_LINES_COUNT - 1 );
+		return;
+	}
+
+	if( key == K_END )
+	{
+		conwin.backscroll = 0;
+		return;
+	}
+
+	if( key == K_TAB || key == K_L2_BUTTON || key == K_LTRIGGER )
+	{
+		Con_CompleteCommand( &con.input, true );
+		Con_ClearField( &con.input_completion );
+		Con_WindowSuggestUpdate();
+		return;
+	}
+
+	if(( key == K_UPARROW ) || (( Q_tolower( key ) == 'p' ) && Key_IsDown( K_CTRL )))
+	{
+		Con_HistoryUp( &con.history, &con.input );
+		// A7 build 106: window edits refresh the dropdown only - never the
+		// ghost completion (freeze on first typed character, build 105)
+		Con_WindowSuggestUpdate();
+		return;
+	}
+
+	if(( key == K_DOWNARROW ) || (( Q_tolower( key ) == 'n' ) && Key_IsDown( K_CTRL )))
+	{
+		Con_HistoryDown( &con.history, &con.input );
+		Con_WindowSuggestUpdate();
+		return;
+	}
+
+	if( key == K_ENTER || key == K_KP_ENTER || key == K_A_BUTTON )
+	{
+		Con_WindowSubmit();
+		return;
+	}
+
+	// A7 build 108: with the platform text input inactive (host.textmode
+	// false) a printable keydown arrives HERE instead of through
+	// CL_CharEvent - the editline routine below only understands editing
+	// keys (backspace/arrows/...), so typed letters were silently swallowed
+	// ("type something, nothing works"). Feed them to the input line as
+	// characters instead. Letters are 32..126 here: TAB(9), ENTER(13) and
+	// ESC(27) are handled above, BACKSPACE is 127 and the arrows >= 128.
+	if( key >= 32 && key < 127 && key != '`' && key != '~' )
+	{
+		Con_DPrintf( "[A7] ev: window key-char '%c'\n", (char)key );
+		Field_CharEvent( &con.input, key );
+		// A7 build 106: dropdown only (flat index scan), no ghost completion
+		Con_WindowSuggestUpdate();
+		return;
+	}
+
+	// pass to the normal editline routine
+	Field_KeyDownEvent( &con.input, key );
+	// A7 build 106: dropdown only (flat index scan), no ghost completion
+	Con_WindowSuggestUpdate();
+}
+
+/*
+================
+Con_DrawConsoleWindow
+
+Draws the floating console window (body, border, title bar with the close
+box, log view with the scrollbar, input line and Submit button)
+================
+*/
+static void Con_DrawConsoleWindow( void )
+{
+	wrect_t	safe;
+	int	titleX, titleY, titleW, titleH;
+	int	closeX, closeY, closeW, closeH;
+	int	subX, subY, subW, subH;
+	int	subLen = 0;
+	int	charH, pad, lines, lineno, y, i;
+	int	logTop, logBottom, closeGlyphW = 0;
+	cl_font_t	*font = Con_WindowFont();
+
+	if( !font )
+		return;
+
+	// A7 build 107: frame marker - if the log stops right after a "draw
+	// enter" the stall is inside the window drawing, not in the keystroke
+	Con_A7Trace( "[A7] cw: draw enter\n" );
+
+	// log lines are drawn by Con_DrawConsoleLine - point it at our font
+	conwin_font = font;
+
+	Con_WindowLayout();
+	Con_WindowClampScroll();
+
+	charH = font->charHeight;
+	pad = font->charWidths[' '];
+	if( pad <= 0 ) pad = 8;
+
+	Con_WindowTitleRect( &titleX, &titleY, &titleW, &titleH );
+	Con_WindowCloseRect( &closeX, &closeY, &closeW, &closeH );
+	Con_WindowSubmitRect( &subX, &subY, &subW, &subH );
+	CL_DrawStringLen( font, "Submit", &subLen, NULL, 0 );
+	CL_DrawCharacterLen( font, 'X', &closeGlyphW, NULL );
+
+	// A7 build 106: SOLID light khaki - no see-through left at all (the
+	// user: "panels are too dark / translucent, wrong green shade"). body,
+	// log card, title and Submit are all stepped up one shade toward the
+	// reference picture
+	ref.dllFuncs.Color4ub( 255, 255, 255, 255 ); // don't grab the screenfade color
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x, conwin.y, conwin.w, conwin.h, 108, 116, 84, 255 );
+
+	// light outline around the whole sheet
+	{
+		byte	r = conwin.focused ? 156 : 146;
+		byte	g = conwin.focused ? 162 : 151;
+		byte	b = conwin.focused ? 136 : 126;
+
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x, conwin.y, conwin.w, 1, r, g, b, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x, conwin.y, 1, conwin.h, r, g, b, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x, conwin.y + conwin.h - 1, conwin.w, 1, 62, 66, 50, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x + conwin.w - 1, conwin.y, 1, conwin.h, 62, 66, 50, 255 );
+	}
+
+	// title bar (lighter khaki than the body, separated by a dark line)
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, titleX, titleY, titleW, titleH, 122, 130, 100, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, titleX, titleY + titleH - 1, titleW, 1, 62, 66, 50, 255 );
+
+	// little wrench glyph at the left of the title, like the picture:
+	// an open ring (spanner head) with a short handle under it
+	{
+		int	ix = titleX + pad;
+		int	iy = titleY + ( titleH - 12 ) * 0.5f;
+		byte	ir = 196, ig = 198, ib = 178;
+
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, ix, iy, 7, 2, ir, ig, ib, 255 );     // head top
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, ix, iy + 5, 7, 2, ir, ig, ib, 255 ); // head bottom
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, ix, iy, 2, 7, ir, ig, ib, 255 );     // head back
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, ix + 4, iy + 7, 3, 5, ir, ig, ib, 255 ); // handle
+		CL_DrawString( titleX + pad + 12, titleY + ( titleH - charH ) * 0.5f, "Console", g_color_table[7], font, 0 );
+	}
+
+	// close box - neutral dark square, never red (picture has a plain X)
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, closeX, closeY, closeW, closeH, 66, 71, 54, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, closeX, closeY, closeW, 1, 140, 145, 126, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, closeX, closeY + closeH - 1, closeW, 1, 46, 50, 38, 255 );
+	CL_DrawCharacter( closeX + ( closeW - closeGlyphW ) * 0.5f, closeY + ( closeH - charH ) * 0.5f,
+		'X', g_color_table[7], font, 0 );
+
+	// log view (newest line at the bottom, like GoldSource) on an inset card
+	logTop = titleY + titleH + 3;
+	logBottom = subY - 5;
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x + 3, logTop, conwin.w - 6,
+		Q_max( 0, logBottom - logTop ), 98, 106, 76, 255 );
+
+	safe.left = conwin.x + pad;
+	safe.right = conwin.x + conwin.w - pad - 10;
+	safe.top = logTop + 3;
+	safe.bottom = logBottom - 2;
+
+	lines = ( safe.bottom - safe.top ) / charH;
+
+	if( lines >= 1 )
+	{
+		lineno = CON_LINES_COUNT - 1 - conwin.backscroll;
+		y = safe.bottom - charH;
+
+		for( i = lines - 1; i >= 0 && lineno >= 0; i-- )
+		{
+			int	lh;
+
+			// notify-only lines (leading '\1') are never in the log view
+			while( lineno >= 0 && CON_LINES( lineno ).start && *CON_LINES( lineno ).start == '\1' )
+				lineno--;
+
+			if( lineno < 0 )
+				break;
+
+			lh = Con_DrawConsoleLine( &safe, y, lineno );
+			if( lh <= 0 )
+				lh = charH; // guard: never stall on a zero-height line
+
+			y -= lh;
+			lineno--;
+		}
+
+		// scrollbar: right column with square arrow buttons top and
+		// bottom (A7 build 105 - the picture has the classic two-arrow
+		// scrollbar, the bare track alone did not read as one)
+		{
+			int	trackX = conwin.x + conwin.w - pad - 8;
+			int	trackW = 6;
+			int	arrowH = 10;
+			int	trackTop = safe.top + arrowH + 1;
+			int	trackBot = safe.bottom - arrowH - 1;
+			int	trackH = Q_max( 6, trackBot - trackTop );
+			int	thumbH = Q_max( 8, trackH * lines / Q_max( 1, CON_LINES_COUNT ));
+			int	thumbY;
+
+			thumbH = Q_min( thumbH, trackH ); // short log: never outgrow the track
+			thumbY = trackTop + ( trackH - thumbH ) * conwin.backscroll / Q_max( 1, CON_LINES_COUNT - lines );
+			thumbY = bound( trackTop, thumbY, Q_max( trackTop, trackBot - thumbH ));
+			byte	ar = conwin.focused ? 150 : 126;
+			byte	ag = conwin.focused ? 155 : 130;
+			byte	ab = conwin.focused ? 136 : 114;
+
+			// arrow boxes
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX, safe.top, trackW, arrowH, 66, 71, 54, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX, safe.bottom - arrowH, trackW, arrowH, 66, 71, 54, 255 );
+
+			// up arrow (stacked bars) / down arrow
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 2, safe.top + 2, 2, 1, ar, ag, ab, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 1, safe.top + 3, 4, 1, ar, ag, ab, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 0, safe.top + 4, 6, 1, ar, ag, ab, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 0, safe.bottom - arrowH + 5, 6, 1, ar, ag, ab, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 1, safe.bottom - arrowH + 6, 4, 1, ar, ag, ab, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX + 2, safe.bottom - arrowH + 7, 2, 1, ar, ag, ab, 255 );
+
+			// track + thumb
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX, trackTop, trackW, trackH, 62, 66, 50, 255 );
+			ref.dllFuncs.FillRGBA( kRenderTransTexture, trackX, thumbY, trackW, thumbH,
+				conwin.focused ? 146 : 112, conwin.focused ? 152 : 117, conwin.focused ? 132 : 97, 255 );
+		}
+	}
+
+	// separator above the input row
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, conwin.x + 3, subY - 4, conwin.w - 6, 1, 62, 66, 50, 255 );
+
+	// input line: text starts at the left edge of the row, like the
+	// picture (no `]` prompt)
+	Field_DrawInputLine( conwin.x + pad, subY + 4, &con.input, 255, conwin.focused, font );
+
+	// Submit button - lighter than the panel so it reads as a button
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, subX, subY, subW, subH,
+		conwin.focused ? 124 : 116, conwin.focused ? 132 : 123, conwin.focused ? 100 : 94, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, subX, subY, subW, 1,
+		conwin.focused ? 156 : 144, conwin.focused ? 162 : 150, conwin.focused ? 136 : 124, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, subX, subY + subH - 1, subW, 1, 46, 50, 38, 255 );
+	CL_DrawString( subX + ( subW - subLen ) * 0.5f, subY + ( subH - charH ) * 0.5f,
+		"Submit", g_color_table[7], font, 0 );
+
+	// A7 build 105: completion dropdown under the input row - every
+	// command/cvar that starts with the typed word, "..." when there are
+	// more (user: "change style of console... with this feature if i type
+	// something it show cvars correct")
+	Con_A7Trace( "[A7] cw: dropdown begin\n" );
+
+	if( conwin.focused && conwin_suggestTotal > 0 && con.input.buffer[0] )
+	{
+		int	sx, sy, sw, sh;
+		int	rowH = charH + 4;
+		int	rowShown = Q_min( conwin_suggestTotal, CONWIN_SUGGEST_ROWS );
+		int	rowCount = Con_WindowSuggestRows();
+		int	hover = -1;
+
+		Con_WindowSuggestRect( &sx, &sy, &sw, &sh );
+
+		if( conwin.mouse_x >= sx && conwin.mouse_x < sx + sw )
+		{
+			for( i = 0; i < rowCount; i++ )
+			{
+				if( conwin.mouse_y >= sy + 2 + i * rowH && conwin.mouse_y < sy + 2 + ( i + 1 ) * rowH )
+					hover = i;
+			}
+		}
+
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, sx, sy, sw, sh, 112, 120, 88, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, sx, sy, sw, 1, 156, 162, 136, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, sx, sy, 1, sh, 156, 162, 136, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, sx + sw - 1, sy, 1, sh, 62, 66, 50, 255 );
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, sx, sy + sh - 1, sw, 1, 62, 66, 50, 255 );
+
+		for( i = 0; i < rowShown; i++ )
+		{
+			int	ry = sy + 2 + i * rowH;
+
+			if( hover == i )
+				ref.dllFuncs.FillRGBA( kRenderTransTexture, sx + 1, ry, sw - 2, rowH, 142, 150, 120, 255 );
+
+			CL_DrawString( sx + pad, ry, conwin_suggest[i], g_color_table[7], font, 0 );
+		}
+
+		if( conwin_suggestTotal > rowShown )
+		{
+			int	ry = sy + 2 + rowShown * rowH;
+
+			if( hover == rowShown )
+				ref.dllFuncs.FillRGBA( kRenderTransTexture, sx + 1, ry, sw - 2, rowH, 142, 150, 120, 255 );
+
+			CL_DrawString( sx + pad, ry, "...", g_color_table[7], font, 0 );
+		}
+
+		Con_A7Trace( "[A7] cw: dropdown done\n" );
+	}
+
+	conwin_font = NULL;
+}
+
+/*
+==============================================================================
+
 DRAWING
 
 ==============================================================================
@@ -1697,7 +2590,7 @@ static void Con_DrawInput( const wrect_t *safe )
 
 	int y = safe->bottom - ( con.curFont->charHeight * 2 );
 	CL_DrawCharacter( safe->left + con.curFont->charWidths[' '], y, ']', g_color_table[7], con.curFont, 0 );
-	int x = Field_DrawInputLine( safe->left + con.curFont->charWidths[' ']*2, y, &con.input, 255, true );
+	int x = Field_DrawInputLine( safe->left + con.curFont->charWidths[' ']*2, y, &con.input, 255, true, NULL );
 
 	// HACKHACK: avoid rendering issues when scroll != 0
 	if( con_showcompletion.value && con.input.scroll == 0 )
@@ -1714,7 +2607,7 @@ static void Con_DrawInput( const wrect_t *safe )
 		if( Q_strlen(con.input_completion.buffer) > len && !Q_strncmp( con.input.buffer, con.input_completion.buffer, len ))
 		{
 			con.input_completion.scroll = len;
-			Field_DrawInputLine( safe->left + con.curFont->charWidths[' ']*2 + x, y, &con.input_completion, 128, false );
+			Field_DrawInputLine( safe->left + con.curFont->charWidths[' ']*2 + x, y, &con.input_completion, 128, false, NULL );
 		}
 	}
 }
@@ -1756,7 +2649,7 @@ static int Con_DrawDebugLines( void )
 
 		count++;
 		y += fontTall;
-		CL_DrawString( x, y, notify->szNotify, notify->color, con.curFont, FONT_DRAW_UTF8 | FONT_DRAW_NOLF );
+		CL_DrawString( x, y, notify->szNotify, notify->color, con.curFont, FONT_DRAW_NOLF );
 	}
 
 	return count;
@@ -1771,27 +2664,19 @@ Draws the debug messages (not passed to console history)
 */
 void Con_DrawDebug( void )
 {
-	static double	timeStart;
-
-	if( scr_download.value != -1.0f )
-	{
-		string dlstring;
-		int length;
-		Q_snprintf( dlstring, sizeof( dlstring ), "Downloading [%d remaining]: ^2%s^7 %5.1f%% time %.f secs",
-			host.downloadcount, host.downloadfile, scr_download.value, Platform_DoubleTime() - timeStart );
-
-		Con_DrawStringLen( dlstring, &length, NULL );
-		length = Q_max( length, 300 );
-		int x = refState.width - length * 1.05f;
-		int y = con.curFont->charHeight * 1.05f;
-		Con_DrawString( x, y, dlstring, g_color_table[7] );
-	}
-	else
-	{
-		timeStart = host.realtime;
-	}
-
+	// A7 build 92: the "Downloading [N remaining]: ... %" line that used to
+	// sit in the top-right corner is gone (user request: "don't show ...
+	// text download number on top right") - download progress is already
+	// shown by the loading bar at the bottom of the loading screen
 	if( !host.allow_console || Con_BackgroundMapActive( ))
+		return;
+
+	// A7 build 93: the top-of-screen debug band (Con_NPrintf rows - the
+	// developer/warning lines fed through HUD_PRINTNOTIFY) must not paint
+	// over the radar while playing or over the loading screen
+	// (user: "developer logs texts still showing in top of radar - HIDE
+	// IT"). the lines still land in the console history as usual.
+	if( cls.state != ca_disconnected )
 		return;
 
 	if( con.draw_notify && !Con_Visible( ))
@@ -1811,14 +2696,33 @@ Draws the last few lines of output transparently over the game top
 static void Con_DrawNotify( void )
 {
 	double	time = cl.time;
-	int	y = 0;
+	int	x, y = 0;
+	// A7 build 92: message styling - the crisp credits font (the same one
+	// the HUD text messages use) instead of the chunky console bitmap font
+	cl_font_t	*font = cls.creditsFont.valid ? &cls.creditsFont : con.curFont;
 
-	if( !con.curFont ) return;
+	if( !con.curFont || !font ) return;
 
-	int x = con.curFont->charWidths[' ']; // offset one space at left screen side
+	// A7 build 92: engine messages are console-only while actually playing
+	// (user: "just hide it - only shown texts log in console"). developer
+	// lines never reach the notify either: Con_AddLine stores them with
+	// addtime 0, so they stay console-only ("Firing: ..." is gone for good)
+	//
+	// A7 build 95: and the whole top-left band stays OFF the loading
+	// screen (user: "fix black screen when i start map with hiding text
+	// log in top - hide it"). the load shows backdrop + centered dialog
+	// only. every line still lands in the console history as usual
+	if( cls.disable_screen )
+		return;
 
-	if( host.allow_console && !Con_BackgroundMapActive( ))
+	if( host.allow_console && !Con_BackgroundMapActive( ) && cls.state != ca_active )
 	{
+		// A7 build 92: the build-91 bottom anchor is reverted - the lines
+		// are back at the TOP-LEFT like the original engine, and they read
+		// like a normal CS 1.6 message line (amber default colour + HUD font)
+		x = font->charWidths[' '];
+		y = 6;
+
 		for( int i = Q_max( 0, CON_LINES_COUNT - con.num_times ); i < CON_LINES_COUNT; i++ )
 		{
 			con_lineinfo_t	*l = &CON_LINES( i );
@@ -1826,8 +2730,8 @@ static void Con_DrawNotify( void )
 			if( l->addtime < ( time - con_notifytime.value ))
 				continue;
 
-			Con_DrawString( x, y, l->start, g_color_table[7] );
-			y += con.curFont->charHeight;
+			CL_DrawString( x, y, l->start, g_color_table[7], font, 0 );
+			y += font->charHeight;
 		}
 	}
 
@@ -1836,16 +2740,19 @@ static void Con_DrawNotify( void )
 		string	buf;
 		int	len;
 
+		x = font->charWidths[' '];
+		y = refState.height / 4; // sane default if the client has no hook
+
 		// update chatline position from client.dll
 		if( clgame.dllFuncs.pfnChatInputPosition )
 			clgame.dllFuncs.pfnChatInputPosition( &x, &y );
 
 		Q_snprintf( buf, sizeof( buf ), "%s: ", con.chat_cmd );
 
-		Con_DrawStringLen( buf, &len, NULL );
-		Con_DrawString( x, y, buf, g_color_table[7] );
+		CL_DrawStringLen( font, buf, &len, NULL, 0 );
+		CL_DrawString( x, y, buf, g_color_table[7], font, 0 );
 
-		Field_DrawInputLine( x + len, y, &con.chat, 255, true );
+		Field_DrawInputLine( x + len, y, &con.chat, 255, true, font );
 	}
 
 	ref.dllFuncs.Color4ub( 255, 255, 255, 255 );
@@ -1863,18 +2770,22 @@ returned.
 static int Con_DrawConsoleLine( const wrect_t *safe, int y, int lineno )
 {
 	con_lineinfo_t	*li = &CON_LINES( lineno );
+	cl_font_t	*font = Con_WinFont();
 
 	if( !li || !li->start || *li->start == '\1' )
 		return 0;	// this string will be shown only at notify
 
-	if( y >= safe->top + con.curFont->charHeight )
-	{
-		float x = safe->left + con.curFont->charWidths[' '];
+	if( !font )
+		return 0;
 
-		CL_DrawString( x, y, li->start, g_color_table[7], con.curFont, FONT_DRAW_UTF8 );
+	if( y >= safe->top + font->charHeight )
+	{
+		float x = safe->left + font->charWidths[' '];
+
+		CL_DrawString( x, y, li->start, g_color_table[7], font, 0 );
 	}
 
-	return con.curFont->charHeight;
+	return font->charHeight;
 }
 
 /*
@@ -2005,9 +2916,37 @@ Con_DrawConsole
 */
 void Con_DrawConsole( void )
 {
+	// build 90: the loading plaque owns the screen while cls.disable_screen
+	// is latched — never unveil the console during a load (a user-toggled
+	// console clears the latch first, so manual open/close still works)
+	if( cls.disable_screen )
+	{
+		// A7 build 92: the connect lines are still shown on the plaque, but
+		// as CS 1.6-style message lines (top-left, amber, credits font) -
+		// they used to come out as raw white console text at the top
+		if( cls.state != ca_disconnected )
+			Con_DrawNotify();
+		return;
+	}
+
 	// never draw console when changelevel in-progress
 	if( cls.state != ca_disconnected && ( cls.changelevel || cls.changedemo ))
 		return;
+
+	// A7 build 91: floating console window over the menu / paused game.
+	// it replaces the full-screen console there; the legacy console keeps
+	// its behaviour everywhere else (loading, -console, dev work)
+	if( conwin.visible )
+	{
+		if( cls.key_dest != key_menu )
+			Con_WindowClose( false ); // safety: never over live gameplay
+		else
+		{
+			Con_CheckResize();
+			Con_DrawConsoleWindow();
+			return;
+		}
+	}
 
 	// check for console width changes from a vid mode change
 	Con_CheckResize ();
@@ -2033,17 +2972,27 @@ void Con_DrawConsole( void )
 	switch( cls.state )
 	{
 	case ca_disconnected:
-		if( cls.key_dest != key_menu )
-		{
+		// A7 build 96: the legacy full screen is raised ONLY when the
+		// user actually keyed the console. after `restart`/`disconnect`
+		// the client just sits in key_game with no window - the old
+		// force-open here unveiled the full Xash console every time
+		// (round 96: "typing restart ... it show full console of xash,
+		// i don't want it"). put the GameUI menu back instead
+		if( cls.key_dest == key_console )
 			Con_DrawSolidConsole( refState.height );
-			Key_SetKeyDest( key_console );
-		}
+		else if( cls.key_dest != key_menu )
+			UI_SetActiveMenu( true ); // runs after UI_UpdateMenu's pass
 		break;
 	case ca_connecting:
 	case ca_connected:
 	case ca_validate:
-		// force to show console always for -dev 3 and higher
-		Con_DrawSolidConsole( con.vislines );
+		// build 101: the connecting/changelevel states used to force the
+		// full Xash console (with the engine version line) onto the screen
+		// while a server changed maps. GoldSource shows the loading screen
+		// there - only an actual user-keyed console (-console/-dev work)
+		// may still draw in these states
+		if( cls.key_dest == key_console )
+			Con_DrawSolidConsole( con.vislines );
 		break;
 	case ca_active:
 	case ca_cinematic:
@@ -2081,10 +3030,19 @@ void Con_DrawVersion( void )
 	if( !scr_drawversion.value )
 		return;
 
+	// build 101: no Xash version stamp while a load or a server map
+	// change runs - GoldSource only shows its loading screen there
+	// ("when server changing map it show console xash version")
+	if( cls.disable_screen || cls.changelevel || cls.changedemo )
+		return;
+
+	if( cls.state == ca_connecting || cls.state == ca_connected || cls.state == ca_validate )
+		return;
+
 	if( cls.key_dest == key_menu )
 	{
-		Q_snprintf( curbuild, sizeof( curbuild ),
-			"v%i/" XASH_VERSION " (%s-%s build %i)", PROTOCOL_VERSION, Q_buildos(), Q_buildarch(), Q_buildnum( ));
+		// A7: cs16.css-style menu has no engine version bar in the corner
+		return;
 	}
 	else
 	{
@@ -2271,6 +3229,27 @@ void Con_CharEvent( int key )
 	else if( cls.key_dest == key_message )
 	{
 		Field_CharEvent( &con.chat, key );
+	}
+	else if( cls.key_dest == key_menu && Con_WindowFocused( ))
+	{
+		// A7 build 91: typing goes to the floating console window while it
+		// is focused (the menu stays live behind it)
+		if( key == '`' || key == '~' )
+			return;
+
+		// A7 build 107: arm the trace on the first character, then bracket
+		// every stage of the keystroke
+		a7TraceBudget = 28;
+		Con_A7Trace( "[A7] chr: window branch in\n" );
+
+		Field_CharEvent( &con.input, key );
+		Con_A7Trace( "[A7] chr: field ok\n" );
+
+		// A7 build 106: FIRST typed character froze the game here in build
+		// 105 - only refresh the dropdown (flat name index, no engine list
+		// walk, no ghost completion) so the keystroke can return instantly
+		Con_WindowSuggestUpdate();
+		Con_A7Trace( "[A7] chr: window branch out\n" );
 	}
 }
 

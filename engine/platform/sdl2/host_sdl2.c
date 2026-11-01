@@ -24,6 +24,16 @@ GNU General Public License for more details.
 #include "sound.h"
 #include "vid_common.h"
 
+// A7 build 108: platform typing trace + IME fallback. printable keys are
+// dropped while host.textmode is on because they are expected to arrive
+// through SDL_TEXTINPUT; on devices where that text path never fires, the
+// dropped characters are queued here and fed as char events when a full
+// poll batch passed without any text input.
+static int	a7_pending_chars[16];
+static int	a7_pending_count = 0;
+static int	a7_pending_age = 0;	// poll batches since the queue got filled
+static qboolean	a7_textinput_seen = false;
+
 /*
 =============
 SDLash_KeyEvent
@@ -62,7 +72,19 @@ static void SDLash_KeyEvent( SDL_KeyboardEvent key )
 		// ignore printable keys, they are coming through SDL_TEXTINPUT
 		// printable keys have keycode equal to their Unicode value, others have SDLK_SCANCODE_MASK set
 		if( !console_key && !FBitSet( key.keysym.sym, SDLK_SCANCODE_MASK ) && key.keysym.sym >= 32 && key.keysym.sym != 127 )
+		{
+			// A7 build 108: don't drop silently - if no SDL_TEXTINPUT
+			// follows this keystroke (broken IME text path on the test
+			// device: the typed letter never reached the engine at all),
+			// the queued character is fed as a char event later in
+			// Platform_RunEvents. ASCII only, one entry per real press.
+			if( !key.repeat && key.keysym.sym < 128 && a7_pending_count < ARRAYSIZE( a7_pending_chars ))
+				a7_pending_chars[a7_pending_count++] = (int)key.keysym.sym;
+
+			Con_DPrintf( "[A7] ev: keydown dropped (textmode, dest=%d) sym=%d\n",
+				cls.key_dest, (int)key.keysym.sym );
 			return;
+		}
 
 		if( keynum >= SDL_SCANCODE_KP_1 && keynum <= SDL_SCANCODE_KP_0 )
 			return;
@@ -220,6 +242,13 @@ SDLash_InputEvent
 */
 static void SDLash_InputEvent( SDL_TextInputEvent input )
 {
+	// A7 build 108: the IME text path is alive for this batch - cancel any
+	// queued fallback characters so a keystroke can never count twice
+	a7_textinput_seen = true;
+	a7_pending_count = 0;
+
+	Con_DPrintf( "[A7] ev: textinput \"%s\" dest=%d\n", input.text, cls.key_dest );
+
 	VGui_ReportTextInput( input.text );
 
 	for( const char *text = input.text; *text; text++ )
@@ -235,6 +264,7 @@ static void SDLash_InputEvent( SDL_TextInputEvent input )
 
 		CL_CharEvent( ch );
 	}
+	Con_A7Trace( "[A7] chr: sdl text event done\n" );
 }
 
 static void SDLash_ActiveEvent( int gain )
@@ -432,6 +462,29 @@ void Platform_RunEvents( void )
 
 	while( host.status != HOST_CRASHED && !host.shutdown_issued && SDL_PollEvent( &event ) )
 		SDLash_EventHandler( &event );
+
+	// A7 build 108: IME fallback. a text input in this batch cancels the
+	// queued (dropped) printables; otherwise they get one whole batch of
+	// grace for SDL_TEXTINPUT to still arrive, and are fed as char events
+	// after that - purely from the keydown path, no engine semantics change
+	if( a7_textinput_seen || a7_pending_count == 0 )
+	{
+		a7_pending_count = 0;
+		a7_pending_age = 0;
+	}
+	else if( ++a7_pending_age > 1 )
+	{
+		for( int i = 0; i < a7_pending_count; i++ )
+		{
+			Con_DPrintf( "[A7] ev: fallback char %c (no textinput)\n", a7_pending_chars[i] );
+			CL_CharEvent( a7_pending_chars[i] );
+		}
+		a7_pending_count = 0;
+		a7_pending_age = 0;
+	}
+	a7_textinput_seen = false;
+
+	Con_A7Trace( "[A7] frame: platform events polled\n" );
 
 #if XASH_PSVITA
 	PSVita_InputUpdate();

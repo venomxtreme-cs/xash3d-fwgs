@@ -285,6 +285,15 @@ static int CL_AdjustYPos( float y, int height )
 	return yPos;
 }
 
+// build 102: the whole HUD draws with the crisp credits font again (the
+// build-101 bitmap revert is undone - "reback that new one of fonts"),
+// so the round-end centerprint simply shares it. Build 101's second,
+// private Tahoma atlas is gone: it would rasterize the same glyphs twice.
+static cl_font_t *CL_GetCenterPrintFont( void )
+{
+	return cls.creditsFont.valid ? &cls.creditsFont : Con_GetCurFont();
+}
+
 /*
 =============
 CL_CenterPrint
@@ -294,10 +303,39 @@ print centerscreen message
 */
 void CL_CenterPrint( const char *text, float y )
 {
-	cl_font_t *font = Con_GetCurFont();
+	// build 102: center/round-end messages draw with the shared crisp
+	// credits font (same face as every other HUD string)
+	cl_font_t *font = CL_GetCenterPrintFont();
 
 	if( COM_StringEmptyOrNULL( text ) || !font || !font->valid )
 		return;
+
+	// build 104 (user: "where is point - ... they are missed in hud
+	// message"): svc_centerprint and the game's HUD_PRINTCENTER arrive as
+	// raw wire text - every other HUD string goes through the client dll's
+	// ConvertToFontCharset() before it reaches the font, but this one was
+	// drawn straight from the network buffer, so utf-8 bullets/dashes/
+	// accents hit the atlas as raw multi-byte values and never shaped a
+	// glyph. decode once into the font's single-byte codepage here, the
+	// exact same rule DrawConsoleString uses (cls.accept_utf8 gates it,
+	// classic single-byte servers pass through untouched).
+	static char decoded[sizeof( clgame.centerPrint.message )];
+
+	if( cls.accept_utf8 )
+	{
+		size_t o = 0;
+
+		Con_UtfProcessChar( 0 ); // reset the shared decoder state
+
+		for( const byte *p = (const byte *)text; *p && o + 1 < sizeof( decoded ); p++ )
+		{
+			int ch = Con_UtfProcessChar( *p );
+			if( ch )
+				decoded[o++] = (char)ch;
+		}
+		decoded[o] = '\0';
+		text = decoded;
+	}
 
 	clgame.centerPrint.totalWidth = 0;
 	clgame.centerPrint.time = cl.mtime[0]; // allow pause for centerprint
@@ -307,7 +345,7 @@ void CL_CenterPrint( const char *text, float y )
 		clgame.centerPrint.message,
 		&clgame.centerPrint.totalWidth,
 		&clgame.centerPrint.totalHeight,
-		FONT_DRAW_HUD | FONT_DRAW_UTF8 );
+		FONT_DRAW_HUD );
 
 	if( font->charHeight )
 		clgame.centerPrint.lines = clgame.centerPrint.totalHeight / font->charHeight;
@@ -433,7 +471,8 @@ called each frame
 */
 void CL_DrawCenterPrint( void )
 {
-	cl_font_t *font = Con_GetCurFont();
+	// build 102: draw with the same crisp font CL_CenterPrint measured
+	cl_font_t *font = CL_GetCenterPrintFont();
 	byte	line[MAX_LINELENGTH];
 	int	charHeight;
 
@@ -461,7 +500,8 @@ void CL_DrawCenterPrint( void )
 
 		while( *pText && *pText != '\n' && lineLength < MAX_LINELENGTH )
 		{
-			int number = Con_UtfProcessChar(( byte ) * pText );
+			// draw raw single-byte text like the original engine
+			int number = ( byte ) * pText;
 			pText++;
 			if( number == 0 )
 				continue;
@@ -894,6 +934,60 @@ static void CL_DrawLoadingOrPaused( int tex )
 	ref.dllFuncs.R_DrawStretchPic( x, y, width, height, 0, 0, 1, 1, tex );
 }
 
+/*
+=============
+CL_DrawLoadingProgress
+
+A7: classic loading plaque — dark bottom band, gold progress bar and
+label (cs16.css palette). Progress comes from scr_loading, overridden
+by scr_download while a file is being fetched.
+=============
+*/
+static void CL_DrawLoadingProgress( void )
+{
+	int	w = refState.width;
+	int	h = refState.height;
+	int	bandH = h / 9;
+	int	barW, barH, x, y, textW = 0, textH = 0;
+	float	flProgress = scr_loading.value;
+	rgba_t labelColor = { 222, 223, 214, 255 };
+	char	text[64];
+
+	if( scr_download.value >= 0.0f )
+		flProgress = Q_max( flProgress, scr_download.value );
+	flProgress = bound( 0.0f, flProgress, 100.0f );
+
+	if( bandH < 60 ) bandH = 60;
+
+	barW = w * 40 / 100;
+	if( barW < 240 ) barW = w * 60 / 100;
+	barH = Q_max( 12, h / 48 );
+
+	x = ( w - barW ) >> 1;
+	y = h - bandH + bandH * 55 / 100;
+
+	// bottom band
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, 0, h - bandH, w, bandH, 41, 44, 33, 235 );
+
+	// label
+	Q_snprintf( text, sizeof( text ), "LOADING... %d%%", (int)flProgress );
+	Con_DrawStringLen( text, &textW, &textH );
+	Con_DrawString( x + (( barW - textW ) >> 1), h - bandH + bandH * 15 / 100, text, labelColor );
+
+	// track
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x, y, barW, barH, 31, 31, 31, 255 );
+
+	// fill (cs16 accent)
+	if( flProgress > 0.0f )
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, x, y, (int)( barW * flProgress / 100.0f ), barH, 196, 181, 80, 255 );
+
+	// bevel: light top/left, dark bottom/right
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x - 1, y - 1, barW + 2, 1, 140, 146, 132, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x - 1, y + barH, barW + 2, 1, 10, 10, 10, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x - 1, y - 1, 1, barH + 2, 140, 146, 132, 255 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + barW, y - 1, 1, barH + 2, 10, 10, 10, 255 );
+}
+
 void CL_DrawHUD( int state )
 {
 	if( state == CL_ACTIVE && !cl.video_prepped )
@@ -925,12 +1019,16 @@ void CL_DrawHUD( int state )
 		}
 		break;
 	case CL_LOADING:
-		CL_DrawLoadingOrPaused( cls.loadingBar );
+		// A7 build 92: no centered loading art in the middle of the screen
+		// (user: "don't show loading in medium place") - PC GoldSource just
+		// shows the backdrop with the progress bar along the bottom
+		CL_DrawLoadingProgress(); // A7: progress plaque
 		break;
 	case CL_CHANGELEVEL:
 		if( cls.draw_changelevel )
 		{
-			CL_DrawLoadingOrPaused( cls.loadingBar );
+			if( cls.loadingBar ) // A7: same guard as CL_LOADING
+				CL_DrawLoadingOrPaused( cls.loadingBar );
 			cls.draw_changelevel = false;
 		}
 		break;
@@ -1210,6 +1308,16 @@ static qboolean CL_LoadHudSprite( const char *szSpriteName, model_t *m_pSprite, 
 	// it's hud sprite, make difference names to prevent free shared textures
 	if( type == SPR_CLIENT || type == SPR_HUDSPRITE )
 		SetBits( m_pSprite->flags, MODEL_CLIENT );
+
+	// build 101/102: HUD graphics (the .spr frames behind bars, numbers,
+	// icons, radar, crosshair pictures) are point-sampled. With
+	// hud_scale 1.5 the linear magnifier smeared every HUD image - at 1.0
+	// nothing samples a scaled texel, so this only fixes non-native
+	// scales (GoldSrc-style crisp, "good quality like original 1.0").
+	// TF_CLAMP (build 102) keeps the freed edge texels from crawling
+	// into the quad border while the frame is magnified.
+	if( type == SPR_HUDSPRITE )
+		SetBits( texFlags, TF_NEAREST|TF_CLAMP );
 
 	m_pSprite->numtexinfo = texFlags; // store texFlags for renderer into numtexinfo
 
@@ -1874,6 +1982,18 @@ static void GAME_EXPORT pfnGetPlayerInfo( int ent_num, hud_player_info_t *pinfo 
 	pinfo->packetloss = player->packet_loss;
 	pinfo->topcolor = player->topcolor;
 	pinfo->bottomcolor = player->bottomcolor;
+	pinfo->m_nSteamID = strtoull(Info_ValueForKey(player->userinfo, "*sid"), NULL, 10);
+}
+
+/*
+=============
+pfnGetPlayerSteamInfo
+
+=============
+*/
+static int GAME_EXPORT pfnGetPlayerSteamInfo( uint64_t steamid, sbrk_player_info_t *player )
+{
+	return SteamBroker_GetPlayerInfo( steamid, player );
 }
 
 /*
@@ -1944,12 +2064,13 @@ returns drawed chachter width (in real screen pixels)
 static int GAME_EXPORT pfnDrawCharacter( int x, int y, int number, int r, int g, int b )
 {
 	rgba_t color = { r, g, b, 255 };
-	int flags = FONT_DRAW_HUD;
 
-	if( hud_utf8.value )
-		flags |= FONT_DRAW_UTF8;
+	// draw single-byte characters as-is, exactly like the original engine.
+	// decoding here silently dropped characters (e.g. '<' after any
+	// single-byte char that looked like a utf-8 lead byte)
+	number &= 255;
 
-	return CL_DrawCharacter( x, y, number, color, &cls.creditsFont, flags );
+	return CL_DrawCharacter( x, y, number, color, &cls.creditsFont, FONT_DRAW_HUD );
 }
 
 /*
@@ -1961,12 +2082,16 @@ drawing string like a console string
 */
 int GAME_EXPORT pfnDrawConsoleString( int x, int y, char *string )
 {
-	cl_font_t *font = Con_GetFont( con_fontsize.value );
+	// build 102: the crisp credits font again for every HUD/hudmessage
+	// string (build 101 went back to the console/bitmap font and the text
+	// lost its quality - user: "reback that new one of fonts"; hudmessage
+	// must look good like before)
+	cl_font_t *font = cls.creditsFont.valid ? &cls.creditsFont : Con_GetFont( con_fontsize.value );
 	rgba_t color;
 	Vector4Copy( clgame.ds.textColor, color );
 	Vector4Set( clgame.ds.textColor, 255, 255, 255, 255 );
 
-	return x + CL_DrawString( x, y, string, color, font, FONT_DRAW_UTF8 | FONT_DRAW_HUD );
+	return x + CL_DrawString( x, y, string, color, font, FONT_DRAW_HUD );
 }
 
 /*
@@ -1994,10 +2119,12 @@ compute string length in screen pixels
 */
 void GAME_EXPORT pfnDrawConsoleStringLen( const char *pText, int *length, int *height )
 {
-	cl_font_t *font = Con_GetFont( con_fontsize.value );
+	// build 102: measure with the same crisp credits font the strings are
+	// drawn with (see pfnDrawConsoleString)
+	cl_font_t *font = cls.creditsFont.valid ? &cls.creditsFont : Con_GetFont( con_fontsize.value );
 
 	if( height ) *height = font->charHeight;
-	CL_DrawStringLen( font, pText, length, NULL, FONT_DRAW_UTF8 | FONT_DRAW_HUD );
+	CL_DrawStringLen( font, pText, length, NULL, FONT_DRAW_HUD );
 }
 
 /*
@@ -3012,9 +3139,7 @@ static int GAME_EXPORT pfnDrawString( int x, int y, const char *str, int r, int 
 	rgba_t color = { r, g, b, 255 };
 	int flags = FONT_DRAW_HUD | FONT_DRAW_NOLF;
 
-	if( hud_utf8.value )
-		SetBits( flags, FONT_DRAW_UTF8 );
-
+	// raw single-byte text, like the original engine
 	return CL_DrawString( x, y, str, color, &cls.creditsFont, flags );
 }
 
@@ -3029,9 +3154,7 @@ static int GAME_EXPORT pfnDrawStringReverse( int x, int y, const char *str, int 
 	rgba_t color = { r, g, b, 255 };
 	int flags = FONT_DRAW_HUD | FONT_DRAW_NOLF;
 
-	if( hud_utf8.value )
-		SetBits( flags, FONT_DRAW_UTF8 );
-
+	// raw single-byte text, like the original engine
 	int width;
 	CL_DrawStringLen( &cls.creditsFont, str, &width, NULL, flags );
 
@@ -3888,7 +4011,8 @@ static cl_enginefunc_t gEngfuncs =
 	pfnGetAppID,
 	Cmd_AliasGetList,
 	pfnVguiWrap2_GetMouseDelta,
-	pfnFilteredClientCmd
+	pfnFilteredClientCmd,
+	pfnGetPlayerSteamInfo
 };
 
 void CL_UnloadProgs( void )

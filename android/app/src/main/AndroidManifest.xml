@@ -88,6 +88,15 @@
 			</intent-filter>
 		</receiver>
 
+		<!-- A7 Steam friends: WebView screen opened by the engine's
+			"steamfriends" console command; it finishes back into the
+			already-running game -->
+		<activity
+			android:name=".SteamFriendsActivity"
+			android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|keyboard|navigation"
+			android:exported="false"
+			android:windowSoftInputMode="adjustResize" />
+
 		<!-- the window is always fullscreen, so the system ignores windowSoftInputMode and SoftKeyboardPan pans the view on its own -->
 		<activity
 			android:name=".XashActivity"

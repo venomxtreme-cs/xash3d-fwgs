@@ -711,6 +711,7 @@ typedef int (*REFAPI)( int version, ref_interface_t *pFunctionTable, ref_api_t* 
 	ENGINE_SHARED_CVAR( f, r_glowshellfreq ) \
 	ENGINE_SHARED_CVAR( f, host_allow_materials ) \
 	ENGINE_SHARED_CVAR( f, r_pvs_radius ) \
+	ENGINE_SHARED_CVAR( f, viewmodel_fov ) \
 
 #define DECLARE_ENGINE_SHARED_CVAR_LIST() \
 	ENGINE_SHARED_CVAR_LIST( DECLARE_ENGINE_SHARED_CVAR )

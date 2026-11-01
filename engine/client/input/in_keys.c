@@ -773,6 +773,29 @@ void GAME_EXPORT Key_Event( int key, int down )
 		return;
 	}
 
+	// A7 build 91: the floating console window consumes clicks, the
+	// title-bar drag and the wheel; everything else falls through to the
+	// menu it floats over
+	if( Con_WindowMouseEvent( key, down ))
+		return;
+
+	// A7 build 91: while the console window is focused the keyboard goes to
+	// it (the menu stays live behind it); F-keys keep their menu meaning and
+	// the first ESC closes the window only
+	if( down && cls.key_dest == key_menu && Con_WindowFocused( ) &&
+		key != K_MOUSE1 && key != K_MOUSE2 && key != K_MOUSE3 && key != K_MOUSE4 && key != K_MOUSE5 &&
+		( key < K_F1 || key > K_F12 ))
+	{
+		if( key == K_ESCAPE )
+		{
+			Con_WindowClose( true );
+			return;
+		}
+
+		Con_WindowKey( key );
+		return;
+	}
+
 	// escape is always handled special
 	if( key == K_ESCAPE && down )
 	{
@@ -903,6 +926,11 @@ Key_EnableTextInput
 */
 void Key_EnableTextInput( qboolean enable, qboolean force )
 {
+	// A7 build 108: platform typing trace - shows whether/when the engine
+	// asked the platform (SDL/IME) to start delivering text input
+	Con_DPrintf( "[A7] ev: Key_EnableTextInput en=%d force=%d dest=%d osk=%d\n",
+		(int)enable, (int)force, cls.key_dest, osk_enable.value != 0.0f );
+
 	if( osk_enable.value )
 	{
 		OSK_EnableTextInput( enable, force );
@@ -943,6 +971,11 @@ Key_SetKeyDest
 */
 void GAME_EXPORT Key_SetKeyDest( int key_dest )
 {
+	// transitions are rare; the log pinpoints who stole the key
+	// destination when a back/escape press lands on the console
+	if( cls.key_dest != key_dest )
+		Con_Printf( "Key_SetKeyDest: %d -> %d\n", cls.key_dest, key_dest );
+
 	IN_ToggleClientMouse( key_dest, cls.key_dest );
 
 	switch( key_dest )
@@ -1021,6 +1054,16 @@ void CL_CharEvent( int key )
 	}
 	else if( cls.key_dest == key_menu )
 	{
+		// A7 build 91: typing goes to the floating console window while it
+		// is focused (Con_CharEvent routes it to the input line)
+		if( Con_WindowFocused( ))
+		{
+			Con_CharEvent( key );
+			// A7 build 107: freeze trace - prints only right after a typed char
+			Con_A7Trace( "[A7] chr: cl branch done\n" );
+			return;
+		}
+
 		UI_CharEvent( key );
 	}
 }

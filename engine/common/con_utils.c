@@ -1155,6 +1155,183 @@ static void Con_ConcatRemaining( const char *src, const char *start )
 }
 
 /*
+==============================================================================
+
+A7 BUILD 105: DROPCOMPLETE MATCH LIST FOR THE FLOATING WINDOW
+
+The floating console window draws a GoldSource-style dropdown under the
+input line while the user types (user: "if i type something it show
+cvars"). This collects every command and cvar name that starts with the
+first word of the typed text; the window handles the drawing and clicks.
+
+==============================================================================
+*/
+typedef struct con_suggest_ctx_s
+{
+	const char		*prefix;
+	char		(*out)[CON_SUGGEST_NAME];
+	int			maxOut;
+	int			total;
+} con_suggest_ctx_t;
+
+static con_suggest_ctx_t	con_suggest;
+
+// A7 build 106: the whole command + cvar name list is walked ONCE (when the
+// console window opens) into this flat index; every keystroke then only
+// scans the array - build 105 walked the engine's live cmd/cvar lists on
+// the FIRST character and the game froze there (user report).
+#define CON_SUGGEST_INDEX_MAX	2048
+static char	con_suggest_index[CON_SUGGEST_INDEX_MAX][CON_SUGGEST_NAME];
+static int	con_suggest_indexCount;
+static qboolean	con_suggest_indexReady;
+
+static void Con_SuggestCollect( const char *s, const void *value, const void *buffer, void *ptr )
+{
+	int	i;
+
+	(void)value; (void)buffer; (void)ptr; (void)con_suggest.prefix;
+
+	if( !s || !s[0] )
+		return;
+
+	if( s[0] == '@' ) // never show system cvars or cmds
+		return;
+
+	if( con_suggest.total >= con_suggest.maxOut )
+		return; // index is full, stop collecting
+
+	// commands and cvars can share a name - store it once
+	for( i = 0; i < con_suggest.total; i++ )
+	{
+		if( !Q_stricmp( con_suggest.out[i], s ))
+			return;
+	}
+
+	Q_strncpy( con_suggest.out[con_suggest.total], s, CON_SUGGEST_NAME );
+	con_suggest.total++;
+}
+
+static int Con_SuggestSort( const void *arg1, const void *arg2 )
+{
+	return Q_stricmp(( const char *)arg1, ( const char *)arg2 );
+}
+
+/*
+===============
+Con_SuggestBuildIndex
+
+build 106: walk every command, alias and cvar ONCE and keep the sorted
+name list in a flat array, so typing never touches the engine's live
+lists again (the first keystroke froze the game in build 105). called
+when the console window opens; Con_GetCompletionMatches falls back to it
+if some other caller gets there first. returns the indexed name count.
+===============
+*/
+int Con_SuggestBuildIndex( void )
+{
+	qboolean	toggle = false;
+
+	if( con_suggest_indexReady )
+		return con_suggest_indexCount;
+
+	con_suggest.prefix = ""; // empty prefix matches every name
+	con_suggest.out = con_suggest_index;
+	con_suggest.maxOut = CON_SUGGEST_INDEX_MAX;
+	con_suggest.total = 0;
+
+	Cmd_LookupCmds( &toggle, NULL, (setpair_t)Con_SuggestCollect );
+	Cvar_LookupVars( 0, &toggle, NULL, (setpair_t)Con_SuggestCollect );
+
+	if( con_suggest.total > 1 )
+		qsort( con_suggest_index, con_suggest.total, CON_SUGGEST_NAME, Con_SuggestSort );
+
+	// sort pushed same-named commands/cvars next to each other: keep one
+	{
+		int	i, kept = 0;
+
+		for( i = 0; i < con_suggest.total; i++ )
+		{
+			if( kept > 0 && !Q_stricmp( con_suggest_index[kept - 1], con_suggest_index[i] ))
+				continue;
+
+			if( kept != i )
+				Q_strncpy( con_suggest_index[kept], con_suggest_index[i], CON_SUGGEST_NAME );
+			kept++;
+		}
+		con_suggest.total = kept;
+	}
+
+	con_suggest_indexCount = con_suggest.total;
+	con_suggest_indexReady = true;
+
+	return con_suggest_indexCount;
+}
+
+/*
+===============
+Con_GetCompletionMatches
+
+fill `out` (up to maxOut sorted names) with every command/cvar that
+starts with the first word of `text`; returns how many matched in total
+(may be larger than maxOut - the caller shows a "..." row for the rest).
+An empty line or a finished word (trailing space) matches nothing.
+===============
+*/
+int Con_GetCompletionMatches( const char *text, char (*out)[CON_SUGGEST_NAME], int maxOut )
+{
+	const char	*p = text;
+	char		prefix[CON_SUGGEST_NAME];
+	size_t		len = 0;
+	int		i, stored = 0, total = 0;
+
+	if( !text || !out || maxOut <= 0 )
+		return 0;
+
+	if( COM_StringEmpty( text ))
+		return 0;
+
+	// the first word is still being typed: a trailing space means it is
+	// finished after it, so there is nothing left to suggest
+	if( text[Q_strlen( text ) - 1] == ' ' )
+		return 0;
+
+	// skip the leading slash of manual commands
+	if( *p == '\\' || *p == '/' )
+		p++;
+
+	while( *p == ' ' )
+		p++;
+
+	while( *p && *p != ' ' && len < sizeof( prefix ) - 1 )
+		prefix[len++] = *p++;
+
+	prefix[len] = 0;
+
+	if( !len )
+		return 0;
+
+	Con_SuggestBuildIndex();
+
+	// plain scan over the pre-sorted index: no engine traversal, no
+	// allocation, bounded by the index size
+	for( i = 0; i < con_suggest_indexCount; i++ )
+	{
+		if( Q_strnicmp( con_suggest_index[i], prefix, len ))
+			continue;
+
+		total++;
+
+		if( stored < maxOut )
+			Q_strncpy( out[stored++], con_suggest_index[i], CON_SUGGEST_NAME );
+	}
+
+	if( stored > 1 )
+		qsort( out, stored, CON_SUGGEST_NAME, Con_SuggestSort );
+
+	return total;
+}
+
+/*
 ===============
 Con_CompleteCommand
 

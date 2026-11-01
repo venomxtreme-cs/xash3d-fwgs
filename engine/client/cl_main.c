@@ -40,6 +40,14 @@ static CVAR_DEFINE_AUTO( cl_logofile, "lambda", FCVAR_ARCHIVE, "player logo name
 static CVAR_DEFINE_AUTO( cl_logocolor, "255 120 24", FCVAR_ARCHIVE, "player logo color" );
 static CVAR_DEFINE_AUTO( cl_logoext, "bmp", FCVAR_ARCHIVE, "temporary cvar to tell engine which logo must be packed" );
 static CVAR_DEFINE( cl_logoupdate, "@cl_logoupdate", "0", 0, "set by menu to trigger clan logo update" );
+// A7 build 111: bumped by the engine whenever a freshly picked/imported
+// logo lands on disk (the Android activity raises the flag from its write
+// thread, CL_CheckAvatarImported consumes it once per frame). The menu
+// Options preview (PlayerSetup), the menu scoreboard (Scoreboard.cpp) and
+// the legacy HUD scoreboard watch this token to drop their cached picture
+// and reload the new bytes LIVE, instead of only after a rejoin
+// (user: "when i put any logo ... make it update in options").
+static CVAR_DEFINE( cl_avatargen, "@cl_avatargen", "0", 0, "live refresh token: engine bumps it when a new player logo reaches media/avatars" );
 CVAR_DEFINE_AUTO( cl_logomaxdim, "96", FCVAR_ARCHIVE, "maximum decal dimension" );
 static CVAR_DEFINE_AUTO( cl_test_bandwidth, "1", FCVAR_ARCHIVE, "test network bandwith before connection" );
 static CVAR_DEFINE_AUTO( cl_require_challenge_echo, "-1", FCVAR_ARCHIVE, "reject connect packets that don't echo challenge, protects against spoofed servers but breaks connection to old servers (-1 = engine default)" );
@@ -83,7 +91,7 @@ CVAR_DEFINE_AUTO( cl_trace_messages, "0", FCVAR_CHEAT, "enable message names tra
 CVAR_DEFINE_AUTO( cl_trace_events, "0", FCVAR_CHEAT, "enable events tracing (good for developers)" );
 static CVAR_DEFINE_AUTO( cl_nat, "0", 0, "show servers running under NAT" );
 CVAR_DEFINE_AUTO( hud_utf8, "0", FCVAR_ARCHIVE, "Use utf-8 encoding for hud text" );
-CVAR_DEFINE_AUTO( ui_renderworld, "0", FCVAR_ARCHIVE, "render world when UI is visible" );
+CVAR_DEFINE_AUTO( ui_renderworld, "1", FCVAR_ARCHIVE, "render world when UI is visible" ); // build 90: default on, GoldSource in-game menu shows the gameplay view
 static CVAR_DEFINE_AUTO( cl_maxframetime, "0", 0, "set deadline timer for client rendering to catch freezes" );
 CVAR_DEFINE_AUTO( cl_fixmodelinterpolationartifacts, "1", 0, "try to fix up models interpolation on a moving platforms (monsters on trains for example)" );
 
@@ -98,7 +106,12 @@ static CVAR_DEFINE_AUTO( bottomcolor, "0", FCVAR_USERINFO|FCVAR_ARCHIVE|FCVAR_FI
 CVAR_DEFINE_AUTO( rate, "25000", FCVAR_USERINFO|FCVAR_ARCHIVE|FCVAR_FILTERABLE, "player network rate" );
 
 CVAR_DEFINE_AUTO( cl_ticket_generator, "revemu2013", FCVAR_ARCHIVE|FCVAR_PRIVILEGED, "you wouldn't steal a car" );
-static CVAR_DEFINE_AUTO( cl_advertise_engine_in_name, "1", FCVAR_ARCHIVE|FCVAR_PRIVILEGED, "add [Xash3D] to the nickname when connecting to GoldSrc servers" );
+// A7 build 111: the [Xash3D] nickname tag on GoldSource servers is GONE
+// (user: "remove tag xash3d when i joined in server goldsource"). The cvar
+// stays registered so old FCVAR_ARCHIVE configs that carry it still load,
+// but it defaults to 0 and the connect/setinfo code below no longer reads
+// it - a stale tagged name is now STRIPPED instead of added.
+static CVAR_DEFINE_AUTO( cl_advertise_engine_in_name, "0", FCVAR_ARCHIVE|FCVAR_PRIVILEGED, "obsolete, unused: was add [Xash3D] to the nickname when connecting to GoldSrc servers" );
 static CVAR_DEFINE_AUTO( cl_log_outofband, "0", FCVAR_ARCHIVE, "log out of band messages, can be useful for server admins and for engine debugging" );
 static CVAR_DEFINE_AUTO( cl_autorecord, "0", 0, "automatically start recording a demo after joining the server" );
 
@@ -326,6 +339,30 @@ static void CL_CheckLogoChanged( void )
 		CL_UpdateLogo();
 		return;
 	}
+#endif
+}
+
+// A7 build 111: "make it update in options" - the Android picker/import
+// thread writes media/avatars/avatar_custom.* and raises the flag in
+// android.c (any thread); this is the frame-side half: drop the cached
+// ref textures under those file names and bump @cl_avatargen so the
+// Options preview and BOTH scoreboards reload the new bytes live (no
+// rejoin, no menu re-entry needed).
+static void CL_CheckAvatarImported( void )
+{
+#if XASH_ANDROID
+	if( !Android_AvatarSavedPending( ))
+		return;
+
+	// next PIC_Load of these names reads the fresh file from disk
+	GL_FreeImage( "media/avatars/avatar_custom.png" );
+	GL_FreeImage( "media/avatars/avatar_custom.tga" );
+	GL_FreeImage( "media/avatars/avatar_self.png" );
+
+	cl_avatargen.value += 1.0f;
+
+	Con_DPrintf( "[A7] avatar: new logo on disk -> @cl_avatargen %d\n",
+		(int)cl_avatargen.value );
 #endif
 }
 
@@ -1235,9 +1272,17 @@ void CL_SendGoldSrcConnectPacket( netadr_t adr, int challenge, const void *ticke
 	Info_SetValueForKeyf( protinfo, "unique", sizeof( protinfo ), "%i", 0xffffffff );
 	Info_SetValueForKey( protinfo, "raw", "steam", sizeof( protinfo ));
 	CL_GetCDKey( protinfo, sizeof( protinfo ));
+	// A7 build 111: never advertise the engine in the nickname - instead
+	// of prepending [Xash3D], STRIP the tag if a saved userinfo/config
+	// from an older build still carries it ("remove tag xash3d when i
+	// joined in server goldsource")
 	const char *name = Info_ValueForKey( cls.userinfo, "name" );
-	if( cl_advertise_engine_in_name.value && Q_strnicmp( name, "[Xash3D]", 8 ))
-		Info_SetValueForKeyf( cls.userinfo, "name", sizeof( cls.userinfo ), "[Xash3D]%s", name );
+	if( !Q_strnicmp( name, "[Xash3D]", 8 ) && name[8] )
+	{
+		char trimmed[MAX_INFO_STRING];
+		Q_strncpy( trimmed, name + 8, sizeof( trimmed ));
+		Info_SetValueForKey( cls.userinfo, "name", trimmed, sizeof( cls.userinfo ));
+	}
 
 	MSG_Init( &send, "GoldSrcConnect", send_buf, sizeof( send_buf ));
 	MSG_WriteLong( &send, NET_HEADER_OUTOFBANDPACKET );
@@ -1550,14 +1595,24 @@ static void CL_Connect_f( void )
 	Con_Printf( "server %s\n", server );
 	CL_Disconnect();
 
-	// TESTTEST: a see console during connection
-	UI_SetActiveMenu( false );
-	Key_SetKeyDest( key_console );
+	// A7 build 91: the loading screen (plaque with the progress bar) covers
+	// the whole connect and download phase like on the console builds - no
+	// console is drawn while it is up, and the plaque stays latched until
+	// the signon completes (or the connection fails and CL_Disconnect
+	// lifts it)
+	Con_WindowReset(); // fresh session: forget a user-closed console window
+	Key_SetKeyDest( key_game );
 
-	cls.state = ca_connecting;
+	// A7 build 93: latch the session id BEFORE the plaque so the GameUI
+	// loading dialog raised inside SCR_BeginLoadingPlaque can tell a remote
+	// join from a local listen server (and put the server in its title)
 	cls.net_protocol = proto;
 	Q_strncpy( cls.servername, server, sizeof( cls.servername ));
 	cls.connect_time = MAX_HEARTBEAT; // CL_CheckForResend() will fire immediately
+
+	SCR_BeginLoadingPlaque( false );
+
+	cls.state = ca_connecting;
 	cls.max_fragment_size = FRAGMENT_MAX_SIZE; // guess a we can establish connection with maximum fragment size
 	cls.connect_retry = 0;
 	memset( &cls.bandwidth_test, 0, sizeof( cls.bandwidth_test ));
@@ -1826,7 +1881,12 @@ void CL_Disconnect( void )
 	cls.net_protocol = PROTO_CURRENT;
 
 	// back to menu in non-developer mode
-	if( host_developer.value || cls.key_dest == key_menu )
+	// A7 build 96: the host_developer early-return left key_dest on
+	// key_game with NO window after a disconnect, and Con_DrawConsole's
+	// ca_disconnected branch then unveiled the full Xash console
+	// (round 96: "when i did disconnect it show full console xash").
+	// always hand the screen back to the menu unless it already owns it
+	if( cls.key_dest == key_menu )
 		return;
 
 	UI_SetActiveMenu( true );
@@ -1887,6 +1947,24 @@ static void CL_LocalServers_f( void )
 CL_InternetServers_f
 =================
 */
+//
+// GoldSrc master list pagination: track the next-page seed per master
+// until an empty page arrives or a page repeats (seed was ignored)
+//
+typedef struct serverlist_pages_s
+{
+	netadr_t master;
+	netadr_t seed; // seed used for the last next-page request
+	int pages;
+} serverlist_pages_t;
+
+static serverlist_pages_t cl_serverlist_pages[4];
+
+static void CL_ResetServerListPages( void )
+{
+	memset( cl_serverlist_pages, 0, sizeof( cl_serverlist_pages ));
+}
+
 static void CL_InternetServers_f( void )
 {
 	if( Cmd_Argc( ) > 2 || ( Cmd_Argc( ) == 2 && !Info_IsValid( Cmd_Argv( 1 ))))
@@ -1902,6 +1980,9 @@ static void CL_InternetServers_f( void )
 	cls.internetservers_nat = cl_nat.value != 0.0f;
 	cls.internetservers_pending = true;
 	Q_strncpy( cls.internetservers_customfilter, Cmd_Argv( 1 ), sizeof( cls.internetservers_customfilter ));
+
+	// master scan starts from the first page: restart page tracking
+	CL_ResetServerListPages();
 
 	// the key is dead extension, keep for compatibility until we use UDP based master server protocol
 	cls.internetservers_wait = NET_MasterQuery( 1, cls.internetservers_nat, cls.internetservers_customfilter );
@@ -2687,6 +2768,22 @@ static void CL_ClientConnect( connprotocol_t proto, const char *c, netadr_t from
 
 	CL_Reconnect( true );
 	UI_SetActiveMenu( cl.background );
+
+	// A7 build 94: UI_SetActiveMenu(false) just dropped the whole window
+	// stack (the GameUI loading dialog included) mid-load - raise the
+	// dialog right away so the backdrop art + dialog from
+	// SCR_BeginLoadingPlaque stay continuous with zero black frames until
+	// the download/precache phases re-show it themselves. key_menu so
+	// Cancel stays tappable; background-map sessions keep their menu
+	if( !cl.background && !cls.demoplayback && !UI_IsVisible( ))
+	{
+		if( cls.connect_time != 0.0f && cls.servername[0] )
+			UI_ConnectionProgress_Connect( cls.servername );
+		else UI_ConnectionProgress_Connect( NULL );
+
+		if( cls.key_dest != key_console )
+			Key_SetKeyDest( key_menu );
+	}
 }
 
 static void CL_Print( const char *c, const char *args, netadr_t from, sizebuf_t *msg )
@@ -2843,6 +2940,9 @@ static void CL_ServerList( netadr_t from, sizebuf_t *msg )
 	}
 
 	// serverlist got from masterserver
+	netadr_t lastadr = { 0 };
+	int count = 0;
+
 	while( MSG_GetNumBitsLeft( msg ) > 8 )
 	{
 		uint8_t addr[16];
@@ -2868,6 +2968,64 @@ static void CL_ServerList( netadr_t from, sizebuf_t *msg )
 
 		NET_Config( true, false ); // allow remote
 		NET_QueryServerByAddress( servadr, proto );
+		lastadr = servadr;
+		count++;
+	}
+
+	// GoldSrc masters return the whole list in pages: request the next one,
+	// seeded with the last address received, until an empty page comes back.
+	// Stop early if the master repeats a page (ignores the seed) or runs away.
+	if( proto == PROTO_GOLDSRC )
+	{
+		int slot = -1;
+
+		for( int i = 0; i < ARRAYSIZE( cl_serverlist_pages ); i++ )
+		{
+			if( cl_serverlist_pages[i].master.type && NET_CompareAdr( cl_serverlist_pages[i].master, from ))
+			{
+				slot = i;
+				break;
+			}
+		}
+
+		if( count && slot < 0 )
+		{
+			// first page from a new master: claim a free slot
+			for( int i = 0; i < ARRAYSIZE( cl_serverlist_pages ); i++ )
+			{
+				if( !cl_serverlist_pages[i].master.type )
+				{
+					cl_serverlist_pages[i].master = from;
+					cl_serverlist_pages[i].pages = 0;
+					slot = i;
+					break;
+				}
+			}
+		}
+
+		qboolean more = false;
+
+		if( slot >= 0 && count )
+		{
+			// repeated page means the master ignored the pagination seed
+			qboolean repeated = cl_serverlist_pages[slot].pages &&
+				NET_CompareAdr( cl_serverlist_pages[slot].seed, lastadr );
+
+			more = !repeated && cl_serverlist_pages[slot].pages < 64;
+		}
+
+		if( more )
+		{
+			cl_serverlist_pages[slot].seed = lastadr;
+			cl_serverlist_pages[slot].pages++;
+
+			NET_MasterQueryNextPage( from, &lastadr, cls.internetservers_customfilter );
+		}
+		else if( slot >= 0 )
+		{
+			// done with this master: empty page, repeated page or page cap
+			memset( &cl_serverlist_pages[slot], 0, sizeof( cl_serverlist_pages[slot] ));
+		}
 	}
 
 	CL_NotifyServerListResponse();
@@ -3379,19 +3537,17 @@ tell server about changed userinfo
 */
 void CL_UpdateInfo( const char *key, const char *value )
 {
-	switch( cls.net_protocol )
+	// A7 build 111: no [Xash3D] setinfo tag any more (see the cvar above);
+	// a stale tagged name coming from an old config is SENT STRIPPED
+	if( key && value && !Q_stricmp( key, "name" ) && !Q_strnicmp( value, "[Xash3D]", 8 ) && value[8] )
 	{
-	case PROTO_GOLDSRC:
-		if( cl_advertise_engine_in_name.value && !Q_stricmp( key, "name" ) && Q_strnicmp( value, "[Xash3D]", 8 ))
-		{
-			CL_ServerCommand( true, "setinfo \"%s\" \"[Xash3D]%s\"\n", key, value );
-			break;
-		}
-		// intentional fallthrough
-	default:
-		CL_ServerCommand( true, "setinfo \"%s\" \"%s\"\n", key, value );
-		break;
+		char trimmed[MAX_INFO_STRING];
+		Q_strncpy( trimmed, value + 8, sizeof( trimmed ));
+		CL_ServerCommand( true, "setinfo \"%s\" \"%s\"\n", key, trimmed );
+		return;
 	}
+
+	CL_ServerCommand( true, "setinfo \"%s\" \"%s\"\n", key, value );
 }
 
 //=============================================================================
@@ -3472,9 +3628,206 @@ static qboolean CL_ShouldRescanFilesystem( void )
 	return retval;
 }
 
+/*
+=============================================================================
+
+A7 build 97: platform loading window feed
+
+The activity draws the loading window above the GL surface (logo, status
+line, segmented bar, download block, Cancel), so no load phase can ever
+show as black. This block keeps it current from the existing progress
+cvars - scr_loading runs 0..100 across the whole pipeline, scr_download
+follows the active transfer - and takes it down once the game owns the
+screen again.
+
+=============================================================================
+*/
+#if XASH_ANDROID
+
+// transfer state behind the window's second bar: the block opens when a
+// file joins the queue (fastdl or a classic file stream) and folds away
+// once the transfer phase ends
+static qboolean s_pl_dlblock = false;
+static char s_pl_dlfile[MAX_SYSPATH];
+
+// build 103 (user: "fix loading return how it was, just fix loading
+// download"): the phase line is the plain build-100 sentence again - no
+// step counters in the text, the window keeps its percent number instead
+
+// one phase sentence for the status line, matched to what the engine is
+// actually doing at this point of the load
+static const char *CL_LoadingPhaseText( void )
+{
+	if( scr_download.value >= 0.0f )
+		return "Verifying and downloading resources...";
+	if( cls.signon > 0 )
+		return "Precaching resources...";
+	if( cls.connect_time != 0.0f )
+		return "Establishing connection...";
+	return "Starting local game server...";
+}
+
+/*
+========================
+CL_LoadingDownloadBlock
+
+open (file != NULL): remember the transferring file and raise the
+window's download block on it.
+close (file == NULL): fold the block away - queue drained or the
+classic file stream is idle again.
+========================
+*/
+void CL_LoadingDownloadBlock( const char *file, qboolean open )
+{
+#if XASH_ANDROID
+	if( open && !COM_StringEmptyOrNULL( file ))
+	{
+		Q_strncpy( s_pl_dlfile, file, sizeof( s_pl_dlfile ));
+		s_pl_dlblock = true;
+		Android_LoadingDownload( s_pl_dlfile, 0.0f, "Downloading from server...", NULL );
+	}
+	else
+	{
+		s_pl_dlblock = false;
+		s_pl_dlfile[0] = '\0';
+		Android_LoadingDownload( NULL, 0.0f, NULL, NULL );
+	}
+#else
+	(void)file;
+	(void)open;
+#endif // XASH_ANDROID
+}
+
+/*
+========================
+CL_LoadingFeed
+
+called once per frame: status + whole-pipeline bar while the window is
+up, transfer bar while a download block is open, and the window comes
+down the moment the signon has completed (the game draws again).
+everything here is a no-op on other platforms and while the window is
+down.
+========================
+*/
+static void CL_LoadingFeed( void )
+{
+	float pct;
+
+	// signon finished: the game owns the screen again
+	if( cls.signon == SIGNONS )
+	{
+		if( Android_LoadingShown( ))
+			Con_Printf( "[A7] loading: signon complete, hiding overlay\n" );
+		Android_LoadingHide();
+		return;
+	}
+
+	// A7 build 98: auto-heal. A load is in progress (disable_screen latched)
+	// but the platform window is down - some call site missed its Show, or a
+	// transient JNI hiccup dropped it. Re-raise it so the load is never a
+	// black screen. Never during background/demo playback.
+	if( cls.disable_screen && !Android_LoadingShown( ) && !cl.background && !cls.demoplayback )
+	{
+		Con_Printf( "[A7] loading: auto-re-show (window was down mid-load)\n" );
+		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+			cls.servername : "" );
+	}
+
+	pct = scr_loading.value;
+
+	// the bar keeps moving while a transfer runs (same rule as the
+	// hud loading bar), the phase line already says what is going on
+	if( scr_download.value >= 0.0f && scr_download.value > pct )
+		pct = scr_download.value;
+
+	Android_LoadingStatus( CL_LoadingPhaseText(), pct );
+
+	if( s_pl_dlblock )
+	{
+		float dl = ( scr_download.value >= 0.0f ) ? scr_download.value : 0.0f;
+
+		Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", NULL );
+	}
+}
+#endif // XASH_ANDROID
+
+/*
+===============
+CL_PrecacheProgress
+
+A7: loading screen progress. scr_loading runs 10..98 across the resource
+precache; the intermediate redraws (we're inside the signon state, so only
+the loading screen gets drawn) make the bar visibly move while heavy assets
+are precaching on slow devices.
+===============
+*/
+static void CL_PrecacheProgress( int done, int total )
+{
+	static double	last_draw = 0.0;
+	double	now;
+
+	Cvar_SetValue( "scr_loading",
+		10.0f + 88.0f * bound( 0, done, Q_max( 1, total )) / Q_max( 1, total ));
+
+	now = Platform_DoubleTime();
+
+	if( cls.state != ca_active && ( now - last_draw ) >= 0.05 )
+	{
+		last_draw = now;
+
+#if XASH_ANDROID
+		// A7 build 97: the signon precache runs inside a blocking stretch -
+		// no host frames pump while it lasts, so push the progress straight
+		// from the resource callback (Android_LoadingStatus is a no-op when
+		// the window is down)
+		Android_LoadingStatus( CL_LoadingPhaseText(), scr_loading.value );
+#endif // XASH_ANDROID
+
+		// build 90: never lift the plaque latch for this redraw — lifting it
+		// (cls.disable_screen = 0) ran the normal frame path and
+		// V_PostRender → Con_DrawConsole unveiled the console over the plaque
+		// mid-precache. SCR_UpdateScreen draws the loading plaque itself while
+		// cls.disable_screen is latched, so the bar keeps moving with the
+		// console hidden. latch it here too: precache also runs on the remote
+		// join path where SCR_BeginLoadingPlaque is never called, and a tick
+		// proves the load is alive, so restart the freeze watchdog with it.
+		// SCR_EndLoadingPlaque at signon clears it, so only the load duration
+		// is covered (and key_dest is back to key_game at serverdata, so no
+		// user-opened console can be swallowed here)
+		cls.disable_screen = host.realtime;
+
+		SCR_UpdateScreen();
+	}
+}
+
 qboolean CL_PrecacheResources( void )
 {
 	resource_t	*pRes;
+	int	totalRes = 0, doneRes = 0;
+
+	// A7: loading screen progress — how much is left to precache
+	for( pRes = cl.resourcesonhand.pNext; pRes && pRes != &cl.resourcesonhand; pRes = pRes->pNext )
+	{
+		if( !FBitSet( pRes->ucFlags, RES_PRECACHED ))
+			totalRes++;
+	}
+	CL_PrecacheProgress( 0, totalRes );
+
+	// A7 build 93: svc_serverdata closes the menu stack in the middle of
+	// the load, so re-raise the GameUI loading dialog for the (long)
+	// precache phase - Mod_LoadWorld below is where the load actually
+	// spends its time. the status line keeps whichever phase it started
+	// with (local: "Starting local game server..."), so this only fires
+	// once per load: after the first Show the dialog is visible again.
+	if( !cl.background && !cls.demoplayback && !UI_IsVisible( ))
+	{
+		if( cls.connect_time != 0.0f && cls.servername[0] )
+			UI_ConnectionProgress_Connect( cls.servername );
+		else UI_ConnectionProgress_Connect( NULL );
+
+		if( cls.key_dest != key_console )
+			Key_SetKeyDest( key_menu );
+	}
 
 	// if we downloaded new WAD files or any other archives they must be added to searchpath
 	if( CL_ShouldRescanFilesystem( ))
@@ -3492,6 +3845,7 @@ qboolean CL_PrecacheResources( void )
 		cl.models[pRes->nIndex] = Mod_LoadWorld( pRes->szFileName, true );
 		SetBits( pRes->ucFlags, RES_PRECACHED );
 		cl.nummodels = 1;
+		CL_PrecacheProgress( ++doneRes, totalRes );
 		break;
 	}
 
@@ -3506,6 +3860,7 @@ qboolean CL_PrecacheResources( void )
 			cl.models[pRes->nIndex] = Mod_ForName( pRes->szFileName, false, false );
 			cl.nummodels = Q_max( cl.nummodels, pRes->nIndex + 1 );
 			SetBits( pRes->ucFlags, RES_PRECACHED );
+			CL_PrecacheProgress( ++doneRes, totalRes );
 
 			if( cl.models[pRes->nIndex] == NULL )
 			{
@@ -3613,6 +3968,7 @@ qboolean CL_PrecacheResources( void )
 		}
 
 		SetBits( pRes->ucFlags, RES_PRECACHED );
+		CL_PrecacheProgress( ++doneRes, totalRes );
 	}
 
 	// make sure modelcount is in-range
@@ -3621,6 +3977,9 @@ qboolean CL_PrecacheResources( void )
 
 	if( cls.state != ca_active )
 		S_EndRegistration();
+
+	// A7: precache complete
+	Cvar_SetValue( "scr_loading", 100.0f );
 
 	return true;
 }
@@ -3709,6 +4068,7 @@ static void CL_InitLocal( void )
 	Cvar_RegisterVariable( &cl_logocolor );
 	Cvar_RegisterVariable( &cl_logoext );
 	Cvar_RegisterVariable( &cl_logoupdate );
+	Cvar_RegisterVariable( &cl_avatargen ); // A7 build 111: live logo refresh token
 	Cvar_RegisterVariable( &cl_logomaxdim );
 	Cvar_RegisterVariable( &cl_test_bandwidth );
 	Cvar_RegisterVariable( &cl_require_challenge_echo );
@@ -3895,6 +4255,19 @@ void Host_ClientBegin( void )
 	// exec console commands
 	Cbuf_Execute ();
 
+#if XASH_ANDROID
+	// A7 build 97: the loading window's Cancel button answers from the UI
+	// thread; this is the first point in the frame where running
+	// "disconnect" is safe (the flag is clear-on-read, so a single tap
+	// produces a single disconnect)
+	if( Android_LoadingCancelled( ))
+		Cbuf_AddText( "disconnect\n" );
+#endif // XASH_ANDROID
+
+	// A7 build 111: a picked/imported logo just hit disk - live refresh
+	// (bumps @cl_avatargen, see CL_CheckAvatarImported)
+	CL_CheckAvatarImported();
+
 	// if client is not active, do nothing
 	if( !cls.initialized ) return;
 
@@ -3921,6 +4294,13 @@ Host_ClientFrame
 */
 void Host_ClientFrame( void )
 {
+#if XASH_ANDROID
+	// A7 build 97: keep the platform loading window fed (status, bar,
+	// transfer block) and take it down when the signon completed
+	if( cls.initialized )
+		CL_LoadingFeed();
+#endif // XASH_ANDROID
+
 	// if client is not active, do nothing
 	if( !cls.initialized ) return;
 	if( cls.key_dest == key_game && cls.state == ca_active && !Con_Visible() )

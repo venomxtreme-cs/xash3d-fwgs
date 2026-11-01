@@ -72,12 +72,21 @@ void UI_KeyEvent( int key, qboolean down )
 
 void UI_MouseMove( int x, int y )
 {
+	// A7 build 91: keep the floating console window's hit-test in sync
+	// (clicks/drag/wheel are consumed in Keys_Event via Con_WindowMouseEvent)
+	Con_WindowSetMouse( x, y );
+
 	if( !gameui.hInstance ) return;
 	gameui.dllFuncs.pfnMouseMove( x, y );
 }
 
 void UI_SetActiveMenu( qboolean fActive )
 {
+	// A7 build 91: the floating console window follows the menu - it opens
+	// with it (unless the user closed it this session) and hides when the
+	// game resumes
+	Con_WindowAutoOpen( fActive );
+
 	if( !gameui.hInstance )
 	{
 		if( !fActive )

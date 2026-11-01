@@ -541,7 +541,6 @@ void V_PostRender( void )
 	{
 		SCR_TileClear();
 		CL_DrawHUD( CL_ACTIVE );
-		VGui_Paint();
 	}
 
 	switch( cls.scrshot_action )
@@ -569,6 +568,21 @@ void V_PostRender( void )
 		ref.dllFuncs.R_ShowTextures();
 		R_ShowTree();
 		UI_UpdateMenu( host.realtime );
+
+		// A7 build 66: paint vgui after UI_UpdateMenu so dialogs draw
+		// over the menu; in-game the tree is painted only once fully
+		// signed on (and never over mapshots)
+		if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot )
+			VGui_Paint();
+
+		// A7 build 66: let the vgui2 GameUI dialogs draw over the menu;
+		// during loading/non-active states they are painted here.
+		// A7 build 68: restored - the black-screen spin is fixed at the
+		// source, XashPaint skips the whole pass while the vgui tree is
+		// empty (idle menu), so this only runs while a dialog is up
+		if( cls.state != ca_active || cls.signon != SIGNONS )
+			VGui_Paint();
+
 		Con_DrawVersion();
 		Con_DrawConsole();
 		Con_DrawDebug(); // must be last

@@ -196,6 +196,9 @@ static void SDLash_TextEvent( const SDL_TextInputEvent *text )
 
 		CL_CharEvent( ch );
 	}
+
+	// A7 build 107: freeze trace - prints only right after a typed char
+	Con_A7Trace( "[A7] chr: sdl text event done\n" );
 }
 
 static void SDLash_MouseEvent( const SDL_MouseButtonEvent *button )
@@ -347,6 +350,10 @@ void Platform_RunEvents( void )
 
 	while( host.status != HOST_CRASHED && !host.shutdown_issued && SDL_PollEvent( &ev ))
 		SDLash_EventHandler( &ev );
+
+	// A7 build 107: freeze trace - one line per frame while a typed char
+	// armed the budget, so "events polled" repeating means the loop lives
+	Con_A7Trace( "[A7] frame: platform events polled\n" );
 }
 
 /*

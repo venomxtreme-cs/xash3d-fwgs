@@ -100,10 +100,35 @@ const char *Android_GetAndroidID( void );
 const char *Android_LoadID( void );
 void Android_SaveID( const char *id );
 void Android_Init( void );
+void Android_RegisterCommands( void ); // A7: "steamfriends" WebView screen
 void *Android_GetNativeObject( const char *name );
 void Android_GetWindowInsets( float insets[4] );
 int Android_GetKeyboardHeight( void );
 void Android_Shutdown( void );
+// A7 build 97: full-screen platform loading window (logo + status +
+// segmented bar + Cancel) that the activity draws above the GL surface
+void Android_LoadingShow( const char *serveraddr );
+void Android_LoadingStatus( const char *text, float percent );
+void Android_LoadingDownload( const char *file, float percent, const char *status, const char *footer );
+void Android_LoadingHide( void );
+qboolean Android_LoadingCancelled( void ); // Cancel button, clear-on-read
+qboolean Android_LoadingShown( void ); // A7 build 98: is the overlay up?
+// A7 build 111: the avatar pick/import thread finished writing the new
+// logo to media/avatars; raised from any thread, clear-on-read by
+// CL_CheckAvatarImported (client/cl_main.c)
+qboolean Android_AvatarSavedPending( void );
+// A7 round 100: scoreboard logo sources
+//   fetch - the activity pulls that steam profile's public photo into
+//           <gamedir>/media/avatars/av_<account>.png (no API key, once
+//           per id while it fetches; the client re-checks the file)
+//   pick  - "avatar_pick": the system image chooser saves the picture as
+//           <gamedir>/media/avatars/avatar_custom.png
+//   import - "avatar_import <path>": build 101, the IN-APP file dialog
+//           returns a path the activity decodes and saves the same way
+//           (PC-style logos/*.bmp search - no Android gallery)
+void Android_AvatarFetch( uint64_t steamid64 );
+void Android_AvatarPick( void );
+void Android_AvatarImport( const char *path );
 #endif
 
 #if XASH_WIN32
