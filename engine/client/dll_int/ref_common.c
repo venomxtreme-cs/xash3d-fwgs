@@ -32,15 +32,7 @@ ref_globals_t refState =
 
 static const char* r_skyBoxSuffix[SKYBOX_MAX_SIDES] = { "rt", "bk", "lf", "ft", "up", "dn" };
 
-#if XASH_ANDROID
-// A7 build 118 (item 4): default was "1" - on a 60 Hz phone vsync halves to
-// 30 fps on any missed deadline ("low fps, 30-60"). Off by default on Android;
-// fps_max (host.c) becomes the cap. Existing config.cfg values are upgraded
-// once by the fps_migrate118 migration in host.c; user changes still win.
-CVAR_DEFINE_AUTO( gl_vsync, "0", FCVAR_ARCHIVE,  "enable vertical syncronization" );
-#else
 CVAR_DEFINE_AUTO( gl_vsync, "1", FCVAR_ARCHIVE,  "enable vertical syncronization" );
-#endif // XASH_ANDROID
 CVAR_DEFINE_AUTO( r_showtextures, "0", FCVAR_CHEAT, "show all uploaded textures" );
 CVAR_DEFINE_AUTO( r_showtextures_zoom, "1.0", FCVAR_ARCHIVE, "r_showtextures atlas preview scale" );
 CVAR_DEFINE_AUTO( r_adjust_fov, "1", FCVAR_ARCHIVE, "making FOV adjustment for wide-screens" );
