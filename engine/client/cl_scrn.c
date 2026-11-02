@@ -802,15 +802,38 @@ void SCR_UpdateScreen( void )
 			// just proved the host is alive, so restart the watchdog.
 			if( cls.state == ca_connecting || cls.state == ca_connected || cls.state == ca_validate )
 			{
-				cls.disable_screen = host.realtime;
+				// A7 build 118 (item 1): PROGRESS-AWARE restart. The netchan
+				// timeout in CL_ReadPackets only fires from ca_connected up, so
+				// a connect that never delivers a packet (dead server, refused
+				// challenge, changelevel handshake that never completes) used to
+				// restart this latch FOREVER while the GameUI connection dialog
+				// stayed modal on top of the game - "every time i played for a
+				// couple of minutes i get this message, i can't press anything".
+				// No packet for cl_timeout in a non-local non-demo session =
+				// dead: abort through CL_Disconnect, the exact path the
+				// dialog's Cancel button takes - it closes the dialog
+				// (SCR_EndLoadingPlaque), clears the latch and hands the screen
+				// back to the menu. custom-content downloads keep last_received
+				// moving (netchan fragments) and local sessions are exempt, the
+				// same rules CL_ReadPackets already applies.
+				if( !cls.demoplayback && !NET_IsLocalAddress( cls.netchan.remote_address )
+					&& ( host.realtime - cls.netchan.last_received ) > cl_timeout.value )
+				{
+					Con_Printf( "%s: no packets for %.0fs, dropping dead session\n", __func__, cl_timeout.value );
+					CL_Disconnect();
+				}
+				else cls.disable_screen = host.realtime;
 			}
 			else
 			{
 				Con_Reportf( "%s: loading plaque timed out\n", __func__ );
-				cls.disable_screen = 0.0f;
-#if XASH_ANDROID
-				Android_LoadingHide(); // A7 build 112: watchdog drop - never leave the window up
-#endif // XASH_ANDROID
+				// A7 build 118 (item 1): the old raw latch clear + Android_LoadingHide
+				// left the GameUI connection dialog up ("i can't press anything").
+				// SCR_EndLoadingPlaque is THE canonical end-of-load path: it clears
+				// the latch, closes the dialog (UI_ConnectionProgress_Disconnect +
+				// UI_SetActiveMenu(false) -> input works again) and hides the
+				// Android loading window (the build-112 belt now lives inside it).
+				SCR_EndLoadingPlaque();
 			}
 		}
 		else

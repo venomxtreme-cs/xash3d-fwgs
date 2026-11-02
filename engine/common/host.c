@@ -74,7 +74,18 @@ static CVAR_DEFINE_AUTO( host_serverstate, "0", FCVAR_READ_ONLY, "displays curre
 static CVAR_DEFINE_AUTO( host_gameloaded, "0", FCVAR_READ_ONLY, "inidcates a loaded game.dll" );
 static CVAR_DEFINE_AUTO( host_clientloaded, "0", FCVAR_READ_ONLY, "inidcates a loaded client.dll" );
 CVAR_DEFINE_AUTO( host_limitlocal, "0", 0, "apply cl_cmdrate and rate to loopback connection" );
+#if XASH_ANDROID
+// A7 build 118 (item 4): default was "72" and, with gl_vsync on, the phone
+// ran 30-60 fps. Uncapped-ish default for Android; config.cfg keeps winning
+// (existing saves are upgraded once by the migration below).
+CVAR_DEFINE( host_maxfps, "fps_max", "120", FCVAR_ARCHIVE|FCVAR_FILTERABLE, "host fps upper limit" );
+// one-time migration marker: 0 until the build-118 fps upgrade rewrites an
+// existing config.cfg (vsync off + fps_max 120), then archived as 1 so later
+// launches - and any value the user picks afterwards - stay untouched
+CVAR_DEFINE_AUTO( fps_migrate118, "0", FCVAR_ARCHIVE, "build 118 android fps migration applied" );
+#else
 CVAR_DEFINE( host_maxfps, "fps_max", "72", FCVAR_ARCHIVE|FCVAR_FILTERABLE, "host fps upper limit" );
+#endif // XASH_ANDROID
 CVAR_DEFINE_AUTO( fps_override, "0", FCVAR_FILTERABLE, "unlock higher framerate values, not supported" );
 static CVAR_DEFINE_AUTO( host_framerate, "0", FCVAR_FILTERABLE, "locks frame timing to this value in seconds" );
 static CVAR_DEFINE( host_sleeptime, "sleeptime", "1", FCVAR_ARCHIVE|FCVAR_FILTERABLE, "milliseconds to sleep for each frame. higher values reduce fps accuracy" );
@@ -1199,6 +1210,9 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 	Cvar_RegisterVariable( &host_allow_materials );
 	Cvar_RegisterVariable( &host_serverstate );
 	Cvar_RegisterVariable( &host_maxfps );
+#if XASH_ANDROID
+	Cvar_RegisterVariable( &fps_migrate118 ); // A7 build 118 item 4 migration marker
+#endif // XASH_ANDROID
 	Cvar_RegisterVariable( &fps_override );
 	Cvar_RegisterVariable( &host_framerate );
 	Cvar_RegisterVariable( &host_sleeptime );
@@ -1308,6 +1322,23 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 			}
 			Cbuf_Execute();
 		}
+
+#if XASH_ANDROID
+		// A7 build 118 (item 4): one-time fps upgrade for configs written by
+		// older builds (vsync on + fps_max 72 = the "30-60 fps" report).
+		// Runs AFTER config.cfg so the saved values are what gets migrated,
+		// and BEFORE userconfig.d so an explicit user file still wins.
+		// The marker is archived: next launch sees 1 and never touches the
+		// values again (user tweaks after this are preserved). Fresh installs
+		// already carry the new defaults, so this is a no-op there.
+		if( !Cvar_VariableInteger( "fps_migrate118" ))
+		{
+			Con_Printf( "[A7] build 118: migrating fps defaults (vsync off, fps_max 120)\n" );
+			Cvar_Set( "gl_vsync", "0" );
+			Cvar_Set( "fps_max", "120" );
+			Cvar_Set( "fps_migrate118", "1" );
+		}
+#endif // XASH_ANDROID
 
 		// exec all files from userconfig.d
 		Cbuf_AddText( "userconfigd\n" );
