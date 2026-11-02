@@ -105,6 +105,11 @@ typedef enum instance_e
 #define MIN_FPS         20.0f    // host minimum fps value for maxfps.
 #define MAX_FPS_SOFT    200.0f   // soft limit for maxfps.
 #define MAX_FPS_HARD    1000.0f  // multiplayer hard limit for maxfps.
+// A7 build 121: Android engine-side uncap ("make all devices work on 1000 fps
+// up", done in CODE, not by touching any cvar default). The frame loop is
+// allowed to run as fast as the hardware can go - nothing software-limits it
+// below 1000. Only the loop sleep/sync uses it; real fps is device-bound.
+#define MAX_FPS_UNCAP   10000.0f
 #define HOST_FPS		100.0f		// multiplayer games typical fps
 
 #define MAX_FRAMETIME	0.25f

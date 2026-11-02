@@ -355,6 +355,32 @@ GL_UpdateSwapInterval
 */
 void GL_UpdateSwapInterval( void )
 {
+#if XASH_ANDROID
+	// A7 build 121: Android engine-side fps uncap (user: "make all devices
+	// work on 1000 fps up... not modified cvars"). The buffer swap is NEVER
+	// allowed to wait for the display, so the refresh rate (60/90/120 Hz)
+	// cannot cap the framerate. The gl_vsync cvar default is left untouched on
+	// purpose - it is just not applied to the swap on Android. Retried every
+	// frame until the driver accepts it (the first frames can run before the
+	// GL context exists); a window/context change (FCVAR_CHANGED, set by
+	// SetMode) resets the driver-side interval, so re-apply it then.
+	static qboolean uncap_applied = false;
+
+	if( FBitSet( gl_vsync.flags, FCVAR_CHANGED ))
+	{
+		ClearBits( gl_vsync.flags, FCVAR_CHANGED );
+		uncap_applied = false; // new context: the interval reset with it
+	}
+
+	if( !uncap_applied )
+	{
+		if( SDL_GL_SetSwapInterval( 0 ) >= 0 )
+		{
+			uncap_applied = true;
+			Con_Printf( "[A7] build 121: engine fps uncap active (vsync bypassed, no frame cap)\n" );
+		}
+	}
+#else
 	if( FBitSet( gl_vsync.flags, FCVAR_CHANGED ))
 	{
 		ClearBits( gl_vsync.flags, FCVAR_CHANGED );
@@ -362,6 +388,7 @@ void GL_UpdateSwapInterval( void )
 		if( SDL_GL_SetSwapInterval( gl_vsync.value ) < 0 )
 			Con_Reportf( S_ERROR  "SDL_GL_SetSwapInterval: %s\n", SDL_GetError( ));
 	}
+#endif // XASH_ANDROID
 }
 
 /*

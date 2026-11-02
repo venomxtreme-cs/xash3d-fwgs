@@ -519,16 +519,32 @@ static double Host_CalcFPS( void )
 	}
 	else if( Host_IsSinglePlayerGame( ))
 	{
+#if XASH_ANDROID
+		// A7 build 121: Android engine-side fps uncap (user: "make all devices
+		// work on 1000 fps up" / "not modified cvars" - this is CODE, no cvar
+		// default was touched). The swap is never blocked (see
+		// GL_UpdateSwapInterval), so never software-limit the frame loop here
+		// either - hardware decides the real number.
+		return MAX_FPS_UNCAP;
+#else
 		// vsync is expected to limit the framerate, but some drivers
 		// ignore it, so never let the game run completely unlimited
 		fps = gl_vsync.value ? MAX_FPS_HARD : host_maxfps.value;
+#endif
 	}
 	else if( !SV_Active() && CL_Protocol() == PROTO_GOLDSRC && cls.state != ca_disconnected && cls.state < ca_validate )
 	{
+		// NOTE: upstream GoldSrc-connect pacing, kept as-is on all platforms
 		return 31.0;
 	}
 	else
 	{
+#if XASH_ANDROID
+		// A7 build 121: multiplayer half of the same Android uncap - the
+		// gl_vsync/fps_max/fps_override ladder (200 soft / 1000 hard) is not
+		// applied on Android anymore, the loop target is above 1000 always.
+		return MAX_FPS_UNCAP;
+#else
 		const double max_fps = fps_override.value ? MAX_FPS_HARD : MAX_FPS_SOFT;
 
 		if( gl_vsync.value )
@@ -541,6 +557,7 @@ static double Host_CalcFPS( void )
 
 			fps = bound( MIN_FPS, fps, max_fps );
 		}
+#endif
 	}
 #endif
 
@@ -556,7 +573,13 @@ static qboolean Host_Autosleep( double dt, double scale )
 		return true;
 
 	// limit fps to withing tolerable range
+#if XASH_ANDROID
+	// A7 build 121: Android uncap - allow the Host_CalcFPS target (always
+	// above 1000 here) through instead of the generic 1000 hard limit
+	fps = bound( MIN_FPS, fps, MAX_FPS_UNCAP );
+#else
 	fps = bound( MIN_FPS, fps, MAX_FPS_HARD );
+#endif
 
 	if( Host_IsDedicated( ))
 		targetframetime = ( 1.0 / ( fps + 1.0 ));
