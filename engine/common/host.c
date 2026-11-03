@@ -572,8 +572,19 @@ static qboolean Host_Autosleep( double dt, double scale )
 	if( fps <= 0 )
 		return true;
 
-	// limit fps to withing tolerable range
 #if XASH_ANDROID
+	// A7 build 123 (user: "now good but make it too high again"): KEEP the
+	// ceiling up. When the target IS the uncap (Host_CalcFPS returned
+	// MAX_FPS_UNCAP, the Android branches), walk straight past the whole
+	// sleep machinery - the sleeptime window, the nano-sleep accounting,
+	// the debug counters - and answer only the one question the frame
+	// loop cares about: has enough time passed for the next frame? At
+	// 10000 fps the target interval is 0.1 ms, so this can only ever
+	// return true in the tightest possible way: no sleep branch is ever
+	// entered, no matter what host_sleeptime or the fallbacks say.
+	if( fps >= MAX_FPS_UNCAP )
+		return dt >= ( 1.0 / fps ) * scale;
+
 	// A7 build 121: Android uncap - allow the Host_CalcFPS target (always
 	// above 1000 here) through instead of the generic 1000 hard limit
 	fps = bound( MIN_FPS, fps, MAX_FPS_UNCAP );

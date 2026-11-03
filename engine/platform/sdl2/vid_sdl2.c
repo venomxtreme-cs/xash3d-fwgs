@@ -375,12 +375,14 @@ void GL_UpdateSwapInterval( void )
 	static qboolean uncap_applied = false;
 	static qboolean uncap_failed_logged = false;
 	static double uncap_next_retry = 0.0;
+	static double uncap_next_check = 0.0;
 
 	if( FBitSet( gl_vsync.flags, FCVAR_CHANGED ))
 	{
 		ClearBits( gl_vsync.flags, FCVAR_CHANGED );
 		uncap_applied = false; // new context: the interval reset with it
 		uncap_next_retry = 0.0; // fresh context: try immediately again
+		uncap_next_check = 0.0;
 	}
 
 	if( !uncap_applied && host.realtime >= uncap_next_retry )
@@ -388,6 +390,7 @@ void GL_UpdateSwapInterval( void )
 		if( SDL_GL_SetSwapInterval( 0 ) >= 0 )
 		{
 			uncap_applied = true;
+			uncap_next_check = host.realtime + 1.0;
 			Con_Printf( "[A7] build 121: engine fps uncap active (vsync bypassed, no frame cap, driver interval %d)\n",
 				SDL_GL_GetSwapInterval( ));
 		}
@@ -401,6 +404,27 @@ void GL_UpdateSwapInterval( void )
 				Con_Printf( "[A7] build122: swap interval 0 rejected: %s (retrying once a second)\n",
 					SDL_GetError( ));
 			}
+		}
+	}
+
+	// A7 build 123 (user: "now good but make it too high again"): KEEP the
+	// ceiling up, not just raise it once. Some drivers/compositors put the
+	// swap interval BACK (resume from background, panel/rate switch,
+	// context touch) and nothing on our side ever noticed - the engine
+	// silently settled at the display refresh again. Verify the interval
+	// once a second (one cheap query, never per frame) and force it to 0
+	// again the moment it drifts.
+	if( uncap_applied && host.realtime >= uncap_next_check )
+	{
+		int interval = SDL_GL_GetSwapInterval();
+
+		uncap_next_check = host.realtime + 1.0;
+
+		if( interval != 0 )
+		{
+			uncap_applied = false;
+			uncap_next_retry = 0.0;
+			Con_Printf( "[A7] build123: swap interval drifted back to %d - re-uncapping\n", interval );
 		}
 	}
 #else
