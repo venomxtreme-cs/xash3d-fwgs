@@ -70,7 +70,7 @@ CVAR_DEFINE_AUTO( cl_timeout, "60", 0, "connect timeout (in-seconds)" );
 void CL_ResetConnectionTimers( void )
 {
 #if XASH_ANDROID
-	if( cls.state == ca_active || cls.state == ca_precached || cls.state == ca_connected )
+	if( cls.state == ca_active || cls.state == ca_validate || cls.state == ca_connected )
 	{
 		cls.netchan.last_received = host.realtime;
 		Con_Printf( "[A7] build126: connection timeout reset on resume (session alive)\n" );
