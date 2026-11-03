@@ -360,24 +360,47 @@ void GL_UpdateSwapInterval( void )
 	// work on 1000 fps up... not modified cvars"). The buffer swap is NEVER
 	// allowed to wait for the display, so the refresh rate (60/90/120 Hz)
 	// cannot cap the framerate. The gl_vsync cvar default is left untouched on
-	// purpose - it is just not applied to the swap on Android. Retried every
-	// frame until the driver accepts it (the first frames can run before the
-	// GL context exists); a window/context change (FCVAR_CHANGED, set by
-	// SetMode) resets the driver-side interval, so re-apply it then.
+	// purpose - it is just not applied to the swap on Android. A window/context
+	// change (FCVAR_CHANGED, set by SetMode) resets the driver-side interval,
+	// so re-apply it then.
+	//
+	// A7 build 122 (user: "features maked engine very lagged to all
+	// devices... i want engine very smooth with high fps"): this function is
+	// called once PER RENDER FRAME, and the 121 retry ran on every one of
+	// them whenever the driver had not accepted yet (no context yet, or a
+	// driver that refuses) - per-frame work added on exactly the hot path we
+	// are trying to make smooth. The retry is now once a second, and a
+	// refusal is printed ONCE with the driver's own words so engine.log says
+	// WHY vsync could not be dropped instead of staying silent.
 	static qboolean uncap_applied = false;
+	static qboolean uncap_failed_logged = false;
+	static double uncap_next_retry = 0.0;
 
 	if( FBitSet( gl_vsync.flags, FCVAR_CHANGED ))
 	{
 		ClearBits( gl_vsync.flags, FCVAR_CHANGED );
 		uncap_applied = false; // new context: the interval reset with it
+		uncap_next_retry = 0.0; // fresh context: try immediately again
 	}
 
-	if( !uncap_applied )
+	if( !uncap_applied && host.realtime >= uncap_next_retry )
 	{
 		if( SDL_GL_SetSwapInterval( 0 ) >= 0 )
 		{
 			uncap_applied = true;
-			Con_Printf( "[A7] build 121: engine fps uncap active (vsync bypassed, no frame cap)\n" );
+			Con_Printf( "[A7] build 121: engine fps uncap active (vsync bypassed, no frame cap, driver interval %d)\n",
+				SDL_GL_GetSwapInterval( ));
+		}
+		else
+		{
+			uncap_next_retry = host.realtime + 1.0;
+
+			if( !uncap_failed_logged )
+			{
+				uncap_failed_logged = true;
+				Con_Printf( "[A7] build122: swap interval 0 rejected: %s (retrying once a second)\n",
+					SDL_GetError( ));
+			}
 		}
 	}
 #else

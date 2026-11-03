@@ -354,28 +354,47 @@ static void CL_CheckAvatarImported( void )
 	// -2 = baseline never taken (first frame only records, never fires)
 	static int s_ft_custom = -2;
 	static int s_ft_self = -2;
+	static double s_next_poll = 0.0;
 	qboolean fresh = Android_AvatarSavedPending( );
 
 	// A7 build 112 (user: "fix logo still not updated in options like too
 	// late do any way"): the JNI flag from writeAvatarPair is the fast
-	// path, but it is one-shot - if it is ever missed (swallowed JNI
+	// path (one cheap flag read per frame) but it is one-shot - if it is ever missed (swallowed JNI
 	// error, an import path that did not raise it) the Options preview
 	// stayed stale until the menu reloaded its pictures on its own.
 	// Poll the on-disk times as a belt: any change on disk = fresh logo,
-	// one frame later, no matter how the file got there.
-	int ft_custom = FS_FileTime( "media/avatars/avatar_custom.png", false );
-	int ft_self = FS_FileTime( "media/avatars/avatar_self.png", false );
+	// no matter how the file got there.
+	//
+	// A7 build 122 (user: "there's features maked engine very lagged to
+	// all devices"): build 111/112 polled that belt EVERY FRAME - two
+	// FS_FileTime calls that walk EVERY search path (APK assets, paks,
+	// zips, every gamedir dir) until they reach media/avatars - and a
+	// missing avatar path (avatar_self is often absent) walks ALL of them
+	// plus real stat() syscalls on
+	// Android FUSE storage, and uncapped fps made the storm WORSE the
+	// faster the loop ran (frame cost scaled with fps = hitching on all
+	// devices). The JNI fast path above still fires the refresh within
+	// one frame; the disk belt now runs twice a second, gamedir-only
+	// (avatars always live in <gamedir>/media/avatars), which is the same
+	// detection latency a human can perceive, at ~1/100th the cost.
+	if( host.realtime >= s_next_poll )
+	{
+		int ft_custom = FS_FileTime( "media/avatars/avatar_custom.png", true );
+		int ft_self = FS_FileTime( "media/avatars/avatar_self.png", true );
 
-	if( s_ft_custom == -2 )
-	{
-		s_ft_custom = ft_custom;
-		s_ft_self = ft_self;
-	}
-	else if( ft_custom != s_ft_custom || ft_self != s_ft_self )
-	{
-		fresh = true;
-		s_ft_custom = ft_custom;
-		s_ft_self = ft_self;
+		s_next_poll = host.realtime + 0.5;
+
+		if( s_ft_custom == -2 )
+		{
+			s_ft_custom = ft_custom;
+			s_ft_self = ft_self;
+		}
+		else if( ft_custom != s_ft_custom || ft_self != s_ft_self )
+		{
+			fresh = true;
+			s_ft_custom = ft_custom;
+			s_ft_self = ft_self;
+		}
 	}
 
 	if( !fresh )

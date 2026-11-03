@@ -707,6 +707,40 @@ void Host_Frame( double time )
 
 	host.framecount++;
 	host.pureframetime = Platform_DoubleTime() - t1;
+
+	// A7 build 122 (user: "there's features maked engine very lagged to
+	// all devices... i want engine very smooth with high fps"): a periodic
+	// frame-rate line for engine.log - the average fps of the last 15
+	// seconds plus the SINGLE WORST frame in that window. The average
+	// proves the uncap reaches real hardware; the worst-frame number is
+	// what a device actually feels as "lag" (a smooth run keeps it within
+	// a few ms of the mean frame time). Pure bookkeeping: two doubles and
+	// a counter, printed once per window.
+	{
+		static double s_fps_win_start = 0.0;
+		static double s_fps_worst = 0.0;
+		static int s_fps_win_frames = 0;
+		double window;
+
+		if( s_fps_win_start == 0.0 )
+			s_fps_win_start = host.realtime;
+
+		if( host.realframetime > s_fps_worst )
+			s_fps_worst = host.realframetime;
+
+		s_fps_win_frames++;
+
+		window = host.realtime - s_fps_win_start;
+
+		if( window >= 15.0 )
+		{
+			Con_Printf( "[A7] build122: avg %.0f fps over %.1f s, worst frame %.1f ms\n",
+				s_fps_win_frames / window, window, s_fps_worst * 1000.0 );
+			s_fps_win_start = host.realtime;
+			s_fps_worst = 0.0;
+			s_fps_win_frames = 0;
+		}
+	}
 }
 
 /*
