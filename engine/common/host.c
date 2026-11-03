@@ -322,16 +322,42 @@ void Host_EndGame( qboolean abort, const char *message, ... )
 
 	Con_Printf( "Host_EndGame: %s\n", string );
 
+	// A7 build 127 (round 128): this is the local-client disconnect path
+	// (quit/disconnect from the menu, map change teardown) - the prime
+	// suspect for the "ingame disconnect too late like freeze" report.
+	// Stamp each stage; anything over 50 ms names itself in the log so the
+	// next crash.log points at the guilty one instead of a guess.
+	const double he_t0 = Platform_DoubleTime();
+	double he_mark = he_t0;
+
 	SV_Shutdown( "\n" );
 #if !XASH_DEDICATED
+	if( Platform_DoubleTime() - he_mark > 0.05 )
+		Con_Printf( "[A7] build127: EndGame SV_Shutdown %.0f ms\n",
+			( Platform_DoubleTime() - he_mark ) * 1000.0 );
+	he_mark = Platform_DoubleTime();
+
 	CL_Disconnect();
 
 	// recreate world if needs
 	CL_ClearEdicts ();
 #endif
 
+	if( Platform_DoubleTime() - he_mark > 0.05 )
+		Con_Printf( "[A7] build127: EndGame CL_Disconnect %.0f ms\n",
+			( Platform_DoubleTime() - he_mark ) * 1000.0 );
+	he_mark = Platform_DoubleTime();
+
 	// release all models
 	Mod_FreeAll();
+
+	if( Platform_DoubleTime() - he_mark > 0.05 )
+		Con_Printf( "[A7] build127: EndGame Mod_FreeAll %.0f ms\n",
+			( Platform_DoubleTime() - he_mark ) * 1000.0 );
+
+	if( Platform_DoubleTime() - he_t0 > 0.05 )
+		Con_Printf( "[A7] build127: Host_EndGame total %.0f ms\n",
+			( Platform_DoubleTime() - he_t0 ) * 1000.0 );
 
 	if( abort ) Host_AbortCurrentFrame ();
 }

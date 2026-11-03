@@ -3554,6 +3554,33 @@ static void GAME_EXPORT NetAPI_SendRequest( int context, int request, int flags,
 		return;
 	}
 
+	// A7 build 127 (round 128): if we are about to recycle an OCCUPIED
+	// slot (pool exhausted - the server browser can flood it with
+	// ui_queryserver queries), tell the evicted request's owner first,
+	// exactly like NetAPI_CancelRequest does. The old code just memset
+	// the slot away with no callback at all, so a pending PLAYERS/RULES
+	// query from the menu was silently dropped and its panels stayed
+	// blank forever (user: "view game servers sometime it didn't show
+	// players and more").
+	if( nr->pfnFunc )
+	{
+		net_api_response_func_t evictedFunc = nr->pfnFunc;
+
+		// A7 build 127 (round 128): name the eviction once so the next
+		// engine.log can prove this path actually ran (scan marker).
+		static int a7_evictLogged = 0;
+
+		if( !a7_evictLogged )
+		{
+			a7_evictLogged = 1;
+			Con_Printf( "[A7] build127: net request slot evicted - owner got a timeout\n" );
+		}
+
+		nr->resp.ping = host.realtime - nr->timesend;
+		SetBits( nr->resp.error, NET_ERROR_TIMEOUT );
+		evictedFunc( &nr->resp );
+	}
+
 	// clear slot
 	memset( nr, 0, sizeof( *nr ));
 

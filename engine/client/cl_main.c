@@ -1924,6 +1924,15 @@ void CL_Disconnect( void )
 	if( cls.state == ca_disconnected )
 		return;
 
+	// A7 build 127 (round 128, user: "ingame disconnect ... too late like
+	// freeze try to fix it"): we have no disconnect log to point at the
+	// guilty code yet, so stamp every stage. Each stage that crosses
+	// 50 ms names itself with its elapsed time - the next crash.log will
+	// say exactly where the hang lives (we no longer guess between the
+	// net teardown, the state/media free and the menu reload).
+	const double dp_t0 = Platform_DoubleTime();
+	double dp_mark = dp_t0;
+
 	cls.connect_time = 0;
 	cls.changedemo = false;
 	cls.max_fragment_size = FRAGMENT_MAX_SIZE; // reset fragment size
@@ -1933,7 +1942,18 @@ void CL_Disconnect( void )
 	// send a disconnect message to the server
 	CL_SendDisconnectMessage( cls.net_protocol );
 	SteamBroker_TerminateGameConnection();
+
+	if( Platform_DoubleTime() - dp_mark > 0.05 )
+		Con_Printf( "[A7] build127: disconnect net/voice/demo stage %.0f ms\n",
+			( Platform_DoubleTime() - dp_mark ) * 1000.0 );
+	dp_mark = Platform_DoubleTime();
+
 	CL_ClearState ();
+
+	if( Platform_DoubleTime() - dp_mark > 0.05 )
+		Con_Printf( "[A7] build127: disconnect CL_ClearState stage %.0f ms\n",
+			( Platform_DoubleTime() - dp_mark ) * 1000.0 );
+	dp_mark = Platform_DoubleTime();
 
 	S_StopBackgroundTrack ();
 	SCR_EndLoadingPlaque (); // get rid of loading plaque
@@ -1958,9 +1978,26 @@ void CL_Disconnect( void )
 	// (round 96: "when i did disconnect it show full console xash").
 	// always hand the screen back to the menu unless it already owns it
 	if( cls.key_dest == key_menu )
+	{
+		if( Platform_DoubleTime() - dp_mark > 0.05 )
+			Con_Printf( "[A7] build127: disconnect media/netchan stage %.0f ms (total %.0f ms)\n",
+				( Platform_DoubleTime() - dp_mark ) * 1000.0,
+				( Platform_DoubleTime() - dp_t0 ) * 1000.0 );
 		return;
+	}
+
+	if( Platform_DoubleTime() - dp_mark > 0.05 )
+		Con_Printf( "[A7] build127: disconnect media/netchan stage %.0f ms\n",
+			( Platform_DoubleTime() - dp_mark ) * 1000.0 );
+	dp_mark = Platform_DoubleTime();
 
 	UI_SetActiveMenu( true );
+
+	// the menu reload is the last suspect for the post-disconnect freeze
+	if( Platform_DoubleTime() - dp_t0 > 0.05 )
+		Con_Printf( "[A7] build127: CL_Disconnect total %.0f ms (menu reload %.0f ms)\n",
+			( Platform_DoubleTime() - dp_t0 ) * 1000.0,
+			( Platform_DoubleTime() - dp_mark ) * 1000.0 );
 }
 
 void CL_Disconnect_f( void )
