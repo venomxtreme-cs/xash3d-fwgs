@@ -1310,6 +1310,16 @@ void HTTP_Run( void )
 		// block away too, the main status line stays
 		CL_LoadingDownloadBlock( NULL, false );
 #endif // XASH_ANDROID
+		// A7 build 126 (item 2, user: "when download finished don't show it
+		// just loading join that's it"): this was the missing half of the
+		// teardown - the transfer block folded, but scr_download kept its
+		// last percent, so CL_LoadingPhaseText() stayed on "Verifying and
+		// downloading resources..." and the bar sat at 100 forever. Drop the
+		// progress cvar back to -1 here (the same reset the classic file
+		// stream already does in Netchan_UpdateProgress) so only the plain
+		// loading/join status remains.
+		Cvar_SetValue( "scr_download", -1.0f );
+		Con_Printf( "[A7] build126: download queue drained - download UI folded, plain loading resumes\n" );
 	}
 #endif // XASH_DEDICATED
 

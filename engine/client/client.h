@@ -1220,6 +1220,9 @@ void UI_ConnectionProgress_ParseServerInfo( const char *server );
 // A7 build 97: transfer block (second bar) of the platform loading window,
 // fed from cl_main.c - open with the transferring file, close with NULL
 void CL_LoadingDownloadBlock( const char *file, qboolean open );
+// A7 build 126 (item 4): connection-clock reset when the Android app
+// returns to the foreground (engine/platform/sdl2/host_sdl2.c)
+void CL_ResetConnectionTimers( void );
 char **GAME_EXPORT CL_GetFilesList( const char *pattern, int *numFiles, int gamedironly ); // used by both UI and Render APIs
 
 //

@@ -33,6 +33,10 @@ static int	a7_pending_chars[16];
 static int	a7_pending_count = 0;
 static int	a7_pending_age = 0;	// poll batches since the queue got filled
 static qboolean	a7_textinput_seen = false;
+// A7 build 126 (item 4): set when the window loses focus / minimizes, read
+// on Android when it comes back - the resume reset only runs after a real
+// backgrounding, never on a focus flicker
+static qboolean	a7_backgrounded = false;
 
 /*
 =============
@@ -422,6 +426,7 @@ static void SDLash_EventHandler( SDL_Event *event )
 			break;
 		case SDL_WINDOWEVENT_MINIMIZED:
 			host.status = HOST_SLEEP;
+			a7_backgrounded = true; // A7 build 126 (item 4): arm the resume reset
 			Cvar_DirectSet( &vid_maximized, "0" );
 			VID_RestoreScreenResolution( (window_mode_t)vid_fullscreen.value );
 			break;
@@ -431,12 +436,30 @@ static void SDLash_EventHandler( SDL_Event *event )
 			Cvar_DirectSet( &vid_maximized, "0" );
 			if( vid_fullscreen.value == WINDOW_MODE_FULLSCREEN )
 				VID_SetMode();
+#if XASH_ANDROID
+			// A7 build 126 (item 4): only after a real backgrounding (armed
+			// above / on focus loss) - restart the connection clocks so the
+			// gap never counts as connection silence (both protocols)
+			if( a7_backgrounded )
+			{
+				a7_backgrounded = false;
+				CL_ResetConnectionTimers();
+			}
+#endif // XASH_ANDROID
 			break;
 		case SDL_WINDOWEVENT_FOCUS_GAINED:
 			SDLash_ActiveEvent( true );
+#if XASH_ANDROID
+			if( a7_backgrounded )
+			{
+				a7_backgrounded = false;
+				CL_ResetConnectionTimers();
+			}
+#endif // XASH_ANDROID
 			break;
 		case SDL_WINDOWEVENT_FOCUS_LOST:
 			SDLash_ActiveEvent( false );
+			a7_backgrounded = true; // A7 build 126 (item 4): arm the resume reset
 			break;
 		case SDL_WINDOWEVENT_RESIZED:
 			VID_SaveWindowSize( event->window.data1, event->window.data2 );

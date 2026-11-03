@@ -80,6 +80,9 @@ void Sys_CloseLog( const char *finalmsg );
 void Sys_InitLog( void );
 void Sys_PrintLog( const char *pMsg );
 int Sys_LogFileNo( void );
+// A7 build 126: force the batched engine.log tail to disk - the crash
+// handler calls it before writing the crash block (engine/common/sys_con.c)
+void Sys_FlushLogNow( void );
 
 // text messages
 #define Msg	Con_Printf

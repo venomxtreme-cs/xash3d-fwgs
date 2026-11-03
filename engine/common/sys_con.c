@@ -23,6 +23,7 @@ GNU General Public License for more details.
 #include <sys/time.h>
 #endif
 #include "xash3d_mathlib.h"
+#include "platform/platform.h" // A7 build 126: Platform_DoubleTime for the log flush window
 #if XASH_WIN32
 #include <io.h>
 #endif
@@ -74,10 +75,79 @@ static void Sys_FlushStdout( void )
 #endif
 }
 
+// A7 build 126 (item 6, user: "fps still didn't increase up to 500-1000 to
+// all devices"): every console line used to cost TWO write() syscalls
+// (timestamp + text) in the middle of the frame, and the launcher passes
+// "-dev 2" by default - that is hundreds of FUSE round-trips per second on
+// /storage/emulated/0 just to keep engine.log current. Lines now pile up in
+// this buffer and reach the disk as ONE write per 50 ms window (or when the
+// buffer fills). The avatar thread prints through nativeConsolePrintf too,
+// so the buffer is guarded by an atomic flag - a concurrent printer falls
+// back to the old direct write instead of racing the buffer. The crash
+// handler force-flushes through Sys_FlushLogNow, so crash_log.txt still
+// ends with the last lines before the crash block.
+static char	s_ldbatch[8192];
+static size_t	s_ldbatch_len = 0;
+static double	s_ldbatch_lastflush = 0.0;
+static volatile int	s_ldbatch_busy = 0;
+static qboolean	s_ldbatch_announced = false;
+
+// caller owns s_ldbatch_busy (or is the crash handler, which accepts a
+// best-effort tail)
+static void Sys_FlushLogfileLocked( void )
+{
+	size_t off = 0;
+
+	// batched console lines first: they were appended before any FILE*
+	// footer data, so they must hit the disk first to keep the order
+	while( s_ldbatch_len - off > 0 )
+	{
+		ssize_t w = write( s_ld.logfileno, s_ldbatch + off, s_ldbatch_len - off );
+
+		if( w <= 0 )
+			break; // never spin on a dead descriptor
+
+		off += (size_t)w;
+	}
+
+	s_ldbatch_len = 0;
+	s_ldbatch_lastflush = Platform_DoubleTime();
+	fflush( s_ld.logfile );
+
+	// A7 build 126: one-shot proof the batching ships (and which flush
+	// window first ran) - Sys_Print, not Con_Printf: this file defines
+	// Con_Printf further down. The busy flag is already held here, so the
+	// print takes the direct-write path instead of re-entering the batch
+	if( !s_ldbatch_announced )
+	{
+		s_ldbatch_announced = true;
+		Sys_Print( "[A7] build126: engine.log batched flush active (one write per window)\n" );
+	}
+}
+
 static void Sys_FlushLogfile( void )
 {
-	if( s_ld.logfile )
-		fflush( s_ld.logfile );
+	if( !s_ld.logfile )
+		return;
+
+	// someone else (avatar consolePrintf) is mid-append: skip, the next
+	// window picks these bytes up
+	if( __sync_lock_test_and_set( &s_ldbatch_busy, 1 ) != 0 )
+		return;
+
+	Sys_FlushLogfileLocked();
+	__sync_lock_release( &s_ldbatch_busy );
+}
+
+// A7 build 126: exported for the crash handler (engine/platform/posix/
+// crash_posix.c) - land the batched tail of engine.log BEFORE the crash
+// block is written to the same descriptor
+void Sys_FlushLogNow( void )
+{
+	if( !s_ld.logfile )
+		return;
+
+	Sys_FlushLogfileLocked();
 }
 
 void Sys_InitLog( void )
@@ -157,6 +227,10 @@ void Sys_CloseLog( const char *finalmsg )
 			break;
 		}
 	}
+
+	// A7 build 126: land batched console lines BEFORE the FILE* footer,
+	// or the tail of the log would land after "Stopped with reason"
+	Sys_FlushLogfile();
 
 	fputc( '\n', s_ld.logfile );
 	fputs( "================================================================================\n", s_ld.logfile );
@@ -349,8 +423,39 @@ void Sys_PrintLog( const char *pMsg )
 			logtime_len = 0;
 		}
 
-		Sys_WriteLogfile( s_ld.logfileno, logtime, logtime_len, log_msg );
-		Sys_FlushLogfile();
+		// A7 build 126 (item 6): append into the batch - ONE write() per
+		// 50 ms window instead of two syscalls per line - when we own the
+		// buffer; a concurrent printer (avatar thread) uses the old
+		// direct path so it can never race the shared bytes
+		if( __sync_lock_test_and_set( &s_ldbatch_busy, 1 ) == 0 )
+		{
+			size_t msglen = Q_strlen( log_msg );
+
+			if( logtime_len + msglen >= sizeof( s_ldbatch ))
+			{
+				// oversized line can never fit: write it straight through
+				Sys_WriteLogfile( s_ld.logfileno, logtime, logtime_len, log_msg );
+			}
+			else
+			{
+				if( s_ldbatch_len + logtime_len + msglen > sizeof( s_ldbatch ))
+					Sys_FlushLogfileLocked(); // we own the flag
+
+				memcpy( s_ldbatch + s_ldbatch_len, logtime, logtime_len );
+				s_ldbatch_len += logtime_len;
+				memcpy( s_ldbatch + s_ldbatch_len, log_msg, msglen );
+				s_ldbatch_len += msglen;
+
+				if( Platform_DoubleTime() - s_ldbatch_lastflush >= 0.05 )
+					Sys_FlushLogfileLocked();
+			}
+
+			__sync_lock_release( &s_ldbatch_busy );
+		}
+		else
+		{
+			Sys_WriteLogfile( s_ld.logfileno, logtime, logtime_len, log_msg );
+		}
 	}
 }
 

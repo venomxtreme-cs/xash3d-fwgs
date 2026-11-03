@@ -711,20 +711,56 @@ void Host_Frame( double time )
 		return;
 
 	double t1 = Platform_DoubleTime();
+	double tsec[6]; // A7 build 126: per-section stamps for the hitch line
 
 	if( host.framecount == 0 )
 		Con_DPrintf( "Time to first frame: %.3f seconds\n", t1 - host.starttime );
 
-	Host_InputFrame ();  // input frame
-	Host_ClientBegin (); // begin client
-	Host_GetCommands (); // dedicated in
-	Host_ServerFrame (); // server frame
-	Host_ClientFrame (); // client frame
-	HTTP_Run();			 // both server and client
-	XRcon_Frame();
+	Host_InputFrame ();  tsec[0] = Platform_DoubleTime(); // input frame
+	Host_ClientBegin (); tsec[1] = Platform_DoubleTime(); // begin client
+	Host_GetCommands ();                            // dedicated in
+	Host_ServerFrame (); tsec[2] = Platform_DoubleTime(); // server frame
+	Host_ClientFrame (); tsec[3] = Platform_DoubleTime(); // client frame
+	HTTP_Run();         tsec[4] = Platform_DoubleTime(); // both server and client
+	XRcon_Frame();      tsec[5] = Platform_DoubleTime();
 
 	host.framecount++;
 	host.pureframetime = Platform_DoubleTime() - t1;
+
+	// A7 build 126 (item 6, user: "fps still didn't increase up to 500-1000
+	// to all devices ... just try"): the 15 s window line below AVERAGES a
+	// hitch away - one 250 ms frame inside 15 s of fast frames still reads
+	// smooth. This line fires live for any frame whose wall time exceeds
+	// 20 ms (rate-limited to one per 2 s) and names the guilty side. Wall
+	// time of frame N covers the BODY of frame N-1 plus the gap after it,
+	// so the report shows last frame's sections + the outside gap:
+	// a big section names engine work (client = render/parse, http = disk),
+	// a big gap names the event pump / OS / GC / FUSE stall.
+	{
+		static double s_prev_sec[6] = { 0 };
+		static double s_prev_body = 0.0;
+		static double s_hitch_last = -10.0;
+		double wall = host.realframetime;
+
+		if( wall > 0.020 && s_prev_body > 0.0 && ( host.realtime - s_hitch_last ) >= 2.0 )
+		{
+			s_hitch_last = host.realtime;
+			Con_Printf( "[A7] build126: hitch wall %.1f ms = last frame body %.1f ms (input %.1f begin %.1f server %.1f client %.1f http %.1f rcon %.1f) + gap %.1f ms\n",
+				wall * 1000.0, s_prev_body * 1000.0,
+				s_prev_sec[0] * 1000.0, s_prev_sec[1] * 1000.0,
+				s_prev_sec[2] * 1000.0, s_prev_sec[3] * 1000.0,
+				s_prev_sec[4] * 1000.0, s_prev_sec[5] * 1000.0,
+				( wall - s_prev_body ) * 1000.0 );
+		}
+
+		s_prev_body = host.pureframetime;
+		s_prev_sec[0] = tsec[0] - t1;
+		s_prev_sec[1] = tsec[1] - tsec[0];
+		s_prev_sec[2] = tsec[2] - tsec[1];
+		s_prev_sec[3] = tsec[3] - tsec[2];
+		s_prev_sec[4] = tsec[4] - tsec[3];
+		s_prev_sec[5] = tsec[5] - tsec[4];
+	}
 
 	// A7 build 122 (user: "there's features maked engine very lagged to
 	// all devices... i want engine very smooth with high fps"): a periodic

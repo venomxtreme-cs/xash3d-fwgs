@@ -262,7 +262,12 @@ static void Sys_Crash( int signal, siginfo_t *si, void *context )
 	// now get log fd and write trace directly to log
 	int logfd = Sys_LogFileNo();
 	if( logfd >= 0 )
+	{
+		// A7 build 126: engine.log lines are batched now - land the tail
+		// first so the crash block is written AFTER the last live lines
+		Sys_FlushLogNow();
 		unused = write( logfd, crash_message, len );
+	}
 	(void)unused;
 
 #if XASH_ANDROID

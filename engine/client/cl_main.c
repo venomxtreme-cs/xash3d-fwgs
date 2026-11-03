@@ -58,6 +58,31 @@ CVAR_DEFINE( cl_draw_beams, "r_drawbeams", "1", FCVAR_CHEAT, "render beams" );
 
 static CVAR_DEFINE_AUTO( rcon_address, "", FCVAR_PRIVILEGED, "remote control address" );
 CVAR_DEFINE_AUTO( cl_timeout, "60", 0, "connect timeout (in-seconds)" );
+
+// A7 build 126 (item 4, user: "fix timeout of server for all servers
+// goldsource and xash versions"): Android counts time spent in the background
+// as connection silence - host.realtime jumps by the whole gap when the app
+// resumes, so a healthy session looked dead ("Connection Problem" after 15 s,
+// the build-118 watchdog's "dropping dead session" after 60 s) and a connect
+// in progress burned its resend window + retry budget. Goldsource and xash
+// servers share both ladders (CL_CheckForResend + the netchan), so ONE reset
+// covers the protocol families. Called from the SDL window-focus hook.
+void CL_ResetConnectionTimers( void )
+{
+#if XASH_ANDROID
+	if( cls.state == ca_active || cls.state == ca_precached || cls.state == ca_connected )
+	{
+		cls.netchan.last_received = host.realtime;
+		Con_Printf( "[A7] build126: connection timeout reset on resume (session alive)\n" );
+	}
+	else if( cls.state == ca_connecting )
+	{
+		cls.connect_time = host.realtime;
+		cls.connect_retry = 0;
+		Con_Printf( "[A7] build126: connect retry window reset on resume\n" );
+	}
+#endif // XASH_ANDROID
+}
 CVAR_DEFINE_AUTO( cl_nopred, "0", FCVAR_USERINFO, "disable client movement prediction" );
 static CVAR_DEFINE_AUTO( cl_nodelta, "0", 0, "disable delta-compression for server messages" );
 CVAR_DEFINE( cl_crosshair, "crosshair", "1", FCVAR_ARCHIVE, "show weapon chrosshair" );
@@ -3797,8 +3822,23 @@ static void CL_LoadingFeed( void )
 	if( s_pl_dlblock )
 	{
 		float dl = ( scr_download.value >= 0.0f ) ? scr_download.value : 0.0f;
+		// A7 build 126 (item 3, user: "show how many left to finish
+		// download like original cs1.6 goldsource"): host.downloadcount is
+		// the number of resources still waiting (recounted every pass in
+		// CL_ProcessResources, shrinks as both the classic stream and fastdl
+		// land files), so the same number is correct for goldsource AND xash
+		// servers. The window renders it on its own footer line - no text
+		// change in the status sentence, no cvar touched.
+		char footer[48];
+		int left = host.downloadcount;
 
-		Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", NULL );
+		if( left > 0 )
+		{
+			Q_snprintf( footer, sizeof( footer ), "%d file%s left",
+				left, ( left == 1 ) ? "" : "s" );
+			Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", footer );
+		}
+		else Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", NULL );
 	}
 }
 #endif // XASH_ANDROID
