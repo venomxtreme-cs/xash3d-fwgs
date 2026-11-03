@@ -849,6 +849,14 @@ uint LZSS_Decompress( const byte *pInput, byte *pOutput, size_t input_len, size_
 void GL_FreeImage( const char *name );
 void VID_Init( void );
 void VID_UpdateWindowInsets( void );
+
+// A7 build 125 (user: "still 200-300 fps, want 1000 always"): on-screen
+// frame-cost readout so a screenshot of the fps line proves where the
+// milliseconds go without pulling engine.log. Updated by the 1s stat
+// windows in host.c (body/loop) and vid_sdl2.c (swap), drawn appended to
+// SCR_DrawFPS while fresh. Values are per-frame averages in ms.
+extern float a7_body_ms, a7_loop_ms, a7_swap_ms;
+extern double a7_body_time, a7_swap_time;
 void UI_SetActiveMenu( qboolean fActive );
 void UI_ShowConnectionWarning( void );
 void Cmd_Null_f( void );

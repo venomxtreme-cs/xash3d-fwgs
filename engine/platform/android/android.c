@@ -141,9 +141,52 @@ Android_GetWindowInsets
 */
 void Android_GetWindowInsets( float insets[4] )
 {
-	jfloatArray result = (*jni.env)->CallObjectMethod( jni.env, jni.activity, jni.getWindowInsets );
-	(*jni.env)->GetFloatArrayRegion( jni.env, result, 0, 4, insets );
+	// A7 build 125 (user: "still 200-300 fps, want 1000 always"):
+	// VID_UpdateWindowInsets() calls this EVERY frame (host_state.c ->
+	// Host_Frame), which was a full JNI round-trip per frame:
+	// CallObjectMethod + GetFloatArrayRegion + DeleteLocalRef. Safe-area
+	// insets cannot meaningfully change 4x per second, so cache the four
+	// floats in C and re-query Java only every 0.25 s (host.realtime).
+	// Cost per frame drops from a JNI bridge call to one compare.
+	static float cached[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	static double next_refresh = 0.0;
+	static qboolean logged = false;
+	jfloatArray result;
+
+	if( host.realtime < next_refresh )
+	{
+		insets[0] = cached[0];
+		insets[1] = cached[1];
+		insets[2] = cached[2];
+		insets[3] = cached[3];
+		return;
+	}
+
+	next_refresh = host.realtime + 0.25;
+	result = (*jni.env)->CallObjectMethod( jni.env, jni.activity, jni.getWindowInsets );
+
+	if( !result || (*jni.env)->ExceptionCheck( jni.env ))
+	{
+		(*jni.env)->ExceptionClear( jni.env );
+		if( result )
+			(*jni.env)->DeleteLocalRef( jni.env, result );
+		return; // keep last cached values
+	}
+
+	(*jni.env)->GetFloatArrayRegion( jni.env, result, 0, 4, cached );
 	(*jni.env)->DeleteLocalRef( jni.env, result );
+
+	if( !logged )
+	{
+		logged = true;
+		Con_Printf( "[A7] build125: window insets JNI cached (1 call per 0.25s instead of every frame) %.3f %.3f %.3f %.3f\n",
+			cached[0], cached[1], cached[2], cached[3] );
+	}
+
+	insets[0] = cached[0];
+	insets[1] = cached[1];
+	insets[2] = cached[2];
+	insets[3] = cached[3];
 }
 
 /*

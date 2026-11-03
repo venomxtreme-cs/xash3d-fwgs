@@ -697,6 +697,13 @@ static qboolean Host_FilterTime( double time )
 Host_Frame
 =================
 */
+// A7 build 125 (user: "still 200-300 fps, want 1000 always"): live per-frame
+// cost values drawn next to the fps counter (SCR_DrawFPS) - updated from a
+// 1-second window inside Host_Frame / GL_SwapBuffers so a screenshot of the
+// fps line shows body / swap / loop milliseconds without engine.log.
+// b = inside Host_Frame (engine+render+swap), s = swap alone, o = loop.
+float a7_body_ms = 0.0f, a7_loop_ms = 0.0f;
+double a7_body_time = -10.0;
 void Host_Frame( double time )
 {
 	// decide the simulation time
@@ -775,6 +782,35 @@ void Host_Frame( double time )
 			s_fps_worst = 0.0;
 			s_fps_pure_sum = 0.0;
 			s_fps_win_frames = 0;
+		}
+	}
+
+	// A7 build 125: 1-second window feeding the ON-SCREEN ms readout next
+	// to the fps counter (same two quantities as the build124 log line,
+	// refreshed 15x more often so a single screenshot is enough proof).
+	{
+		static double s_on_win = 0.0;
+		static double s_on_body = 0.0;
+		static int s_on_frames = 0;
+		double on_window;
+
+		if( s_on_win == 0.0 )
+			s_on_win = host.realtime;
+
+		s_on_body += host.pureframetime;
+		s_on_frames++;
+
+		on_window = host.realtime - s_on_win;
+
+		if( on_window >= 1.0 && s_on_frames > 0 )
+		{
+			a7_body_ms = (float)(( s_on_body / s_on_frames ) * 1000.0 );
+			a7_loop_ms = (float)(( on_window - s_on_body ) / s_on_frames * 1000.0 );
+			a7_body_time = Platform_DoubleTime();
+
+			s_on_win = host.realtime;
+			s_on_body = 0.0;
+			s_on_frames = 0;
 		}
 	}
 }

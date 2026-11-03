@@ -873,6 +873,12 @@ static void GL_SetupAttributes( void )
 	ref.dllFuncs.GL_SetupAttributes( glw_state.safe );
 }
 
+// A7 build 125: live swap cost for the on-screen ms readout (SCR_DrawFPS).
+// Updated from a 1-second window below; a7_swap_time is the Platform_DoubleTime
+// of the last completed window so the draw can hide stale values.
+float a7_swap_ms = 0.0f;
+double a7_swap_time = -10.0;
+
 void GL_SwapBuffers( void )
 {
 	// A7 build 124 (user: device reaches only 200-400 fps, wants 1000
@@ -908,6 +914,32 @@ void GL_SwapBuffers( void )
 		s_sw_sum = 0.0;
 		s_sw_max = 0.0;
 		s_sw_n = 0;
+	}
+
+	// A7 build 125: separate 1-second window feeding the ON-SCREEN ms
+	// readout next to the fps counter (SCR_DrawFPS) - same accumulator
+	// logic as the 15s log line, but refreshed 15x more often so one
+	// screenshot shows body vs swap vs loop without engine.log.
+	{
+		static double s_on_sw_win = 0.0;
+		static double s_on_sw_sum = 0.0;
+		static int s_on_sw_n = 0;
+
+		if( s_on_sw_win == 0.0 )
+			s_on_sw_win = host.realtime;
+
+		s_on_sw_sum += dt;
+		s_on_sw_n++;
+
+		if(( host.realtime - s_on_sw_win ) >= 1.0 && s_on_sw_n > 0 )
+		{
+			a7_swap_ms = (float)(( s_on_sw_sum / s_on_sw_n ) * 1000.0 );
+			a7_swap_time = Sys_DoubleTime();
+
+			s_on_sw_win = host.realtime;
+			s_on_sw_sum = 0.0;
+			s_on_sw_n = 0;
+		}
 	}
 }
 

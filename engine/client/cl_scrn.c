@@ -56,7 +56,7 @@ void SCR_DrawFPS( int height )
 	static int	framecount = 0;
 	static int	minfps = 9999;
 	static int	maxfps = 0;
-	char		fpsstring[64];
+	char		fpsstring[128];
 	int		offset;
 
 	if( cls.state != ca_active || !cl_showfps.value || cl.background )
@@ -102,6 +102,22 @@ void SCR_DrawFPS( int height )
 			Q_snprintf( fpsstring, sizeof( fpsstring ), "fps: ^1%4i min, ^3%4i cur, ^2%4i max", minfps, curfps, maxfps );
 		else Q_snprintf( fpsstring, sizeof( fpsstring ), "%4i fps", curfps );
 		MakeRGBA( color, 255, 255, 255, 255 );
+	}
+
+	// A7 build 125 (user: "still 200-300 fps, want 1000 always"): append the
+	// frame-cost split (per-frame averages in ms) while the stat windows are
+	// live, so ONE screenshot of the fps number proves where the time goes:
+	//   body = inside Host_Frame (engine+render+swap), loop = event pump /
+	//   state machine around it, swap = GPU flush + compositor handoff.
+	// 1000 fps needs all three together <= 1.00 ms per frame. Hidden as soon
+	// as the windows go stale (>2.5 s, e.g. during loading) - never faked.
+	if( Platform_DoubleTime() - Q_max( a7_body_time, a7_swap_time ) < 2.5 )
+	{
+		size_t len = strlen( fpsstring );
+
+		if( len < sizeof( fpsstring ) )
+			Q_snprintf( fpsstring + len, sizeof( fpsstring ) - len,
+				" ^7b%.1f s%.1f o%.1f", a7_body_ms, a7_swap_ms, a7_loop_ms );
 	}
 
 	Con_DrawStringLen( fpsstring, &offset, NULL );
