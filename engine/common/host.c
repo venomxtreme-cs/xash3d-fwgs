@@ -730,6 +730,7 @@ void Host_Frame( double time )
 	{
 		static double s_fps_win_start = 0.0;
 		static double s_fps_worst = 0.0;
+		static double s_fps_pure_sum = 0.0;
 		static int s_fps_win_frames = 0;
 		double window;
 
@@ -739,6 +740,7 @@ void Host_Frame( double time )
 		if( host.realframetime > s_fps_worst )
 			s_fps_worst = host.realframetime;
 
+		s_fps_pure_sum += host.pureframetime;
 		s_fps_win_frames++;
 
 		window = host.realtime - s_fps_win_start;
@@ -747,8 +749,31 @@ void Host_Frame( double time )
 		{
 			Con_Printf( "[A7] build122: avg %.0f fps over %.1f s, worst frame %.1f ms\n",
 				s_fps_win_frames / window, window, s_fps_worst * 1000.0 );
+
+			// A7 build 124 (user: "samsung a34 increase only 200-300-400
+			// fps, want 1000 always"): WHERE the milliseconds go, averaged
+			// over the same window:
+			//   frame body = host.pureframetime = everything inside
+			//     Host_Frame (client+server+render submit+THE SWAP - the
+			//     swap time itself is logged separately by build124 in
+			//     vid_sdl2), so engine work = body minus swap;
+			//   loop overhead = wall - body = event pump (SDL/JNI input
+			//     poll), state machine, filter time - pure engine plumbing.
+			// If body ≈ wall the frame is spent INSIDE the frame (GPU
+			// submit/swap), if body << wall the loop itself is throttled.
+			// 1000 fps needs wall ms <= 1.0 - these numbers name the
+			// guilty side instead of guessing.
+			{
+				int frames = s_fps_win_frames;
+
+				Con_Printf( "[A7] build124: frame body %.2f ms, loop overhead %.2f ms (per frame, %d frames)\n",
+					( s_fps_pure_sum / frames ) * 1000.0,
+					( window - s_fps_pure_sum ) / frames * 1000.0, frames );
+			}
+
 			s_fps_win_start = host.realtime;
 			s_fps_worst = 0.0;
+			s_fps_pure_sum = 0.0;
 			s_fps_win_frames = 0;
 		}
 	}

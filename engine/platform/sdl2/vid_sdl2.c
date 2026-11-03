@@ -875,7 +875,40 @@ static void GL_SetupAttributes( void )
 
 void GL_SwapBuffers( void )
 {
+	// A7 build 124 (user: device reaches only 200-400 fps, wants 1000
+	// always): time the swap itself once every 15 seconds. The swap is
+	// where GFP driver work is flushed and the buffer is handed to the
+	// Android compositor - if THIS is several milliseconds per frame the
+	// ceiling is presentation/GPU, and no engine-side change can break it.
+	// ~4 arithmetic ops per frame otherwise.
+	static double s_sw_win_start = 0.0;
+	static double s_sw_sum = 0.0;
+	static double s_sw_max = 0.0;
+	static int s_sw_n = 0;
+	double t0, dt;
+
+	t0 = Sys_DoubleTime();
 	SDL_GL_SwapWindow( host.hWnd );
+	dt = Sys_DoubleTime() - t0;
+
+	if( s_sw_win_start == 0.0 )
+		s_sw_win_start = host.realtime;
+
+	s_sw_sum += dt;
+	s_sw_n++;
+	if( dt > s_sw_max )
+		s_sw_max = dt;
+
+	if(( host.realtime - s_sw_win_start ) >= 15.0 )
+	{
+		Con_Printf( "[A7] build124: swap avg %.2f ms, max %.2f ms over %d swaps in %.1f s\n",
+			( s_sw_sum / s_sw_n ) * 1000.0, s_sw_max * 1000.0, s_sw_n,
+			host.realtime - s_sw_win_start );
+		s_sw_win_start = host.realtime;
+		s_sw_sum = 0.0;
+		s_sw_max = 0.0;
+		s_sw_n = 0;
+	}
 }
 
 int GL_SetAttribute( int attr, int val )
