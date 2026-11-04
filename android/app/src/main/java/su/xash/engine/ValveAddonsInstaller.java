@@ -44,7 +44,11 @@ final class ValveAddonsInstaller {
 	//     BackgroundLayout.txt + background/*.tga) - an install from an
 	//     earlier build has this key set and would never extract the
 	//     new files, leaving the menu on the flat-colour fallback.
-	private static final String ADDONS_VERSION = "amxx-1.9.0.5314-r4";
+	// r5: build 129 (round 130) always refreshes resource/*_english.txt
+	//     (a stale localization file blanks every menu label - the
+	//     round-130 "menu text is blank" report) - bump so a current
+	//     install picks the shipped files up exactly once.
+	private static final String ADDONS_VERSION = "amxx-1.9.0.5314-r5";
 
 	private static final String ZIP_ASSET = "valve-addons.zip";
 	private static final String MARKER_REL =
@@ -139,6 +143,12 @@ final class ValveAddonsInstaller {
 			return true;	// shipped modules: always refresh
 		if( rel.endsWith( "modules.ini" ) || rel.endsWith( "hamdata.ini" ))
 			return true;	// module lists must match the .so set
+		// shipped localization: menu labels resolve through L() against
+		// resource/*_english.txt and a stale disk copy blanks them (the
+		// round-130 "menu text is blank" report) - app assets, not user
+		// data - always refresh
+		if( rel.endsWith( "_english.txt" ))
+			return true;
 		if( rel.endsWith( ".ewp" ) && out.isFile() )
 			return false;	// user waypoints
 		if( rel.contains( "/addons/amxmodx/data/file_vault/" ) && out.isFile() )
