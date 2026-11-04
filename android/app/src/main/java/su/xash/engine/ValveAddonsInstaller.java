@@ -48,7 +48,10 @@ final class ValveAddonsInstaller {
 	//     (a stale localization file blanks every menu label - the
 	//     round-130 "menu text is blank" report) - bump so a current
 	//     install picks the shipped files up exactly once.
-	private static final String ADDONS_VERSION = "amxx-1.9.0.5314-r5";
+	// r6: build 130 (round 131) ships gfx/shell/colors.lst with the coded
+	//     palette and always refreshes it - a stale on-device colors file
+	//     repaints the menu orange (the round-131 screenshots).
+	private static final String ADDONS_VERSION = "amxx-1.9.0.5314-r6";
 
 	private static final String ZIP_ASSET = "valve-addons.zip";
 	private static final String MARKER_REL =
@@ -148,6 +151,12 @@ final class ValveAddonsInstaller {
 		// round-130 "menu text is blank" report) - app assets, not user
 		// data - always refresh
 		if( rel.endsWith( "_english.txt" ))
+			return true;
+		// shipped GameUI palette: UI_ApplyCustomColors() parses
+		// gfx/shell/colors.lst once at UI_Init and a stale on-disk copy
+		// repaints the menu (the round-131 "rows draw orange" report) -
+		// app asset, not user data - always refresh
+		if( rel.endsWith( "gfx/shell/colors.lst" ))
 			return true;
 		if( rel.endsWith( ".ewp" ) && out.isFile() )
 			return false;	// user waypoints
