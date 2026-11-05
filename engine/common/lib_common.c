@@ -620,9 +620,15 @@ static qboolean COM_AMXX_SeedFromAPK( const char *privroot )
                 closedir( d );
         }
 
+        /* Always Con_Printf (not Con_Reportf): this is THE field-proof line
+         * for item 4 in the wire path - on a normal launch the seed branch
+         * wins and the later "!ready" marker never runs, so this one has to
+         * survive release builds or engine.log carries no evidence at all.
+         * Uses the same "build137: server libs from the APK lib dir" needle
+         * the scan112 FS/engine bucket looks for. */
         if( ok )
-                Con_Reportf( "%s: shipped libraries seeded from the APK lib dir %s -> %s\n",
-                        __func__, apkdir, privroot );
+                Con_Printf( "[A7] build137: server libs from the APK lib dir (seeded %s -> %s)\n",
+                        apkdir, privroot );
         else
                 Con_Printf( S_WARN "%s: incomplete APK seed of %s\n", __func__, privroot );
 
