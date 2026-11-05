@@ -674,6 +674,43 @@ static qboolean FS_CheckForXashGameDir( const char *gamedir )
                 }
         }
 
+        /* A7 build 137 (item 3, user: "fix in liblist.gam trying to find
+         * regamedll and metamod, make it method easy work without liblist.gam
+         * for all androids"): NEITHER file ships in any of the Android addon
+         * zips (verified: cstrike/valve bundles carry no gameinfo.txt and no
+         * liblist.gam), so a perfectly good game folder was rejected outright
+         * and the engine died with "Couldn't find game directory" instead of
+         * resolving metamod/regamedll. Prove a gamedir by its CONTENT instead:
+         * any real mod folder carries maps/ (the actual levels), dlls/ (the
+         * archived server library of a PC install) or cl_dlls/ (the client).
+         * Empty folders and unrelated dirs (addons/, gfx/, ...) match none of
+         * these, so the old "don't add empty or addon directories" rule still
+         * holds.
+         */
+        {
+                const char *proofs[] = { "maps", "dlls", "cl_dlls" };
+
+                // a Quake tree also has maps/, but it must stay on the quake
+                // path (id1/pak0.pak + progs.dat) - let the caller decide
+                if( FS_CheckForQuakeGameDir( gamedir ))
+                        return false;
+
+                for( int i = 0; i < sizeof( proofs ) / sizeof( proofs[0] ); i++ )
+                {
+                        char buf[MAX_SYSPATH];
+
+                        if( Q_snprintf( buf, sizeof( buf ), "%s/%s", gamedir, proofs[i] ) > 0 )
+                        {
+                                if( FS_SysFolderExists( buf ))
+                                {
+                                        Con_Printf( "[A7] build137: gamedir '%s' accepted by content (%s/) - no gameinfo.txt/liblist.gam needed\n",
+                                                gamedir, proofs[i] );
+                                        return true;
+                                }
+                        }
+                }
+        }
+
         return false;
 }
 
@@ -747,6 +784,26 @@ qboolean FS_ParseGameInfo( const char *gamedir, gameinfo_t *GameInfo, qboolean r
                         GameInfo->rodir = rodir;
                         return true;
                 }
+        }
+
+        /* A7 build 137 (item 3): neither gameinfo.txt nor liblist.gam exists
+         * on disk (the folder was accepted by content in FS_CheckForXashGameDir
+         * above). Synthesize the SAME in-memory gameinfo the v14 defaults
+         * build (cstrike -> dlls/cs.so, everything else -> dlls/hl.so - see
+         * FS_InitGameInfo) so gamedll/metamod resolution runs from known-good
+         * values instead of a missing file. Nothing is written (RoDir rule).
+         * The metamod guard in FS_ParseGenericGameInfo already makes sure a
+         * liblist left by old AMX install guides can never point the gamedll
+         * back at metamod itself.
+         */
+        if( liblist_mtime < 0 && gameinfo_mtime < 0 && FS_CheckForQuakeGameDir( gamedir_path ) == false )
+        {
+                FS_InitGameInfo( GameInfo, gamedir, false, -1 );
+                GameInfo->rodir = rodir;
+
+                Con_Printf( "[A7] build137: default gameinfo for '%s' (no gameinfo.txt/liblist.gam) - gamedll %s\n",
+                        gamedir, GameInfo->game_dll_linux );
+                return true;
         }
 
         return false;

@@ -21,6 +21,9 @@ GNU General Public License for more details.
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#if XASH_ANDROID
+#include <dirent.h> /* A7 build 137: seed the private module tree from the APK lib dir */
+#endif
 
 static char s_szLastError[1024] = "";
 
@@ -444,6 +447,189 @@ static void COM_AMXX_FakeClientChain( void )
         fclose( f );
 }
 
+/* A7 build 137 (items 3+4): does this app's own nativeLibraryDir
+ * (XASH3D_GAMELIBDIR) carry the server side? Both APKs package
+ * libmetamod_android_<arch>.so; only ONE ABI can ever be in that directory
+ * (an installed package is extracted for the device's ABI alone), so once
+ * this probe hits, sourcing libraries from here is ABI-proof by
+ * construction - unlike the addon zips, which carried _arm64 and _armv7a
+ * copies side by side on /sdcard (the mixed-ABI reinstall report).
+ * Returns false when the directory is missing/unusable so the legacy
+ * /sdcard copy chain keeps its turn (pre-build-137 installs). */
+static qboolean COM_AMXX_APKLibDir( char *metamod_path, size_t size )
+{
+        const char *apkdir = getenv( "XASH3D_GAMELIBDIR" );
+        const char *archnames[] = { Q_buildarch(), "arm64", "armv7a", "armv7l", "armv7hf" };
+        int i;
+
+        if( COM_StringEmptyOrNULL( apkdir ))
+                return false;
+
+        for( i = 0; i < ( int )sizeof( archnames ) / sizeof( archnames[0] ); i++ )
+        {
+                if( COM_StringEmpty( archnames[i] ))
+                        continue;
+
+                Q_snprintf( metamod_path, size, "%s/libmetamod_android_%s.so",
+                        apkdir, archnames[i] );
+
+                if( access( metamod_path, R_OK ) == 0 )
+                        return true;
+        }
+
+        metamod_path[0] = '\0';
+        return false;
+}
+
+#if XASH_ANDROID
+/* A7 build 137 (item 4): copy one file when the local copy is missing or a
+ * different size (the shipped set changes per build). Returns true when the
+ * destination ends up present. Plain stat/fopen - both ends are absolute
+ * paths on local storage, no filesystem search paths involved. */
+static qboolean COM_AMXX_Mirror( const char *src, const char *dst )
+{
+        struct stat st_src, st_dst;
+        FILE *in, *out;
+        char buf[16384];
+        size_t n;
+
+        if( stat( src, &st_src ) != 0 )
+                return false;
+
+        if( stat( dst, &st_dst ) == 0 && st_dst.st_size == st_src.st_size )
+                return true;
+
+        in = fopen( src, "rb" );
+
+        if( !in )
+                return false;
+
+        out = fopen( dst, "wb" );
+
+        if( !out )
+        {
+                fclose( in );
+                return false;
+        }
+
+        while(( n = fread( buf, 1, sizeof( buf ), in )) > 0 )
+                fwrite( buf, 1, n, out );
+
+        fclose( in );
+        fclose( out );
+
+        return stat( dst, &st_dst ) == 0;
+}
+
+/* mkdir -p for the three private destinations below */
+static void COM_AMXX_MakeParent( const char *filepath )
+{
+        char dir[MAX_SYSPATH];
+        char *p;
+
+        Q_strncpy( dir, filepath, sizeof( dir ));
+        p = Q_strrchr( dir, '/' );
+
+        if( p && p != dir )
+        {
+                *p = '\0';
+                COM_AMXX_MkDirP( dir );
+        }
+}
+
+/*
+=================
+COM_AMXX_SeedFromAPK
+
+A7 build 137 (item 4): the shipped server libraries live in this app's
+nativeLibraryDir ONLY now (the addon zips stop unwrapping .so onto
+/sdcard and the launchers purge whatever older builds left there). The
+AMX Mod X loader takes exactly ONE root (MM_GAMELIBDIR) and the engine
+has always handed it a PRIVATE copy of the module dir - .so may not be
+dlopened from shared storage - so that private tree is now FED FROM THE
+APK LIB DIR instead of from the gamedir. Custom modules the user
+installed with the launcher's Modules tab still arrive through
+COM_AMXX_CopyTree (they stay on /sdcard: they are user data), and both
+kinds of library end up in the same single-ABI private dir exactly like
+before. Returns true when the shipped set is present afterwards.
+=================
+*/
+static qboolean COM_AMXX_SeedFromAPK( const char *privroot )
+{
+        char apkmetamod[MAX_SYSPATH];
+        char src[MAX_SYSPATH], dst[MAX_SYSPATH];
+        const char *apkdir;
+        qboolean ok = true;
+        struct dirent *ent;
+        DIR *d;
+
+        if( !COM_AMXX_APKLibDir( apkmetamod, sizeof( apkmetamod )))
+                return false;
+
+        apkdir = getenv( "XASH3D_GAMELIBDIR" );
+
+        if( COM_StringEmptyOrNULL( apkdir ))
+                return false;
+
+        // metamod: the privroot branch probes this exact arch-suffixed name
+        Q_snprintf( dst, sizeof( dst ), "%s/addons/metamod/dlls/%s",
+                privroot, COM_FileWithoutPath( apkmetamod ));
+        COM_AMXX_MakeParent( dst );
+
+        if( !COM_AMXX_Mirror( apkmetamod, dst ))
+                ok = false;
+
+        // the AMX Mod X core, under the neutral name plugins.ini names
+        Q_snprintf( src, sizeof( src ), "%s/libmm_amxmodx.so", apkdir );
+        Q_snprintf( dst, sizeof( dst ), "%s/addons/amxmodx/dlls/libmm_amxmodx.so",
+                privroot );
+        COM_AMXX_MakeParent( dst );
+
+        if( !COM_AMXX_Mirror( src, dst ))
+                ok = false;
+
+        // every libamxx_* module in the APK dir, flat into the module dir
+        // (that is exactly how modules.cpp builds the path on Android:
+        // MM_GAMELIBDIR "/libamxx_" shortname ".so")
+        Q_snprintf( dst, sizeof( dst ), "%s/addons/amxmodx/modules", privroot );
+        COM_AMXX_MkDirP( dst );
+        d = opendir( apkdir );
+
+        if( d )
+        {
+                while(( ent = readdir( d )) != NULL )
+                {
+                        size_t len;
+
+                        if( Q_strncmp( ent->d_name, "libamxx_", 8 ))
+                                continue;
+
+                        len = strlen( ent->d_name );
+
+                        if( len < 4 || Q_strcmp( ent->d_name + len - 3, ".so" ))
+                                continue;
+
+                        Q_snprintf( src, sizeof( src ), "%s/%s", apkdir, ent->d_name );
+                        Q_snprintf( dst, sizeof( dst ), "%s/addons/amxmodx/modules/%s",
+                                privroot, ent->d_name );
+
+                        if( !COM_AMXX_Mirror( src, dst ))
+                                ok = false;
+                }
+
+                closedir( d );
+        }
+
+        if( ok )
+                Con_Reportf( "%s: shipped libraries seeded from the APK lib dir %s -> %s\n",
+                        __func__, apkdir, privroot );
+        else
+                Con_Printf( S_WARN "%s: incomplete APK seed of %s\n", __func__, privroot );
+
+        return ok;
+}
+#endif // XASH_ANDROID
+
 static qboolean COM_AMXX_Setup( char *out, size_t size, const char *realdll )
 {
         static qboolean prepared = false;
@@ -487,10 +673,112 @@ static qboolean COM_AMXX_Setup( char *out, size_t size, const char *realdll )
                         Q_strncat( privroot, "/amxx", sizeof( privroot ));
                         ready = COM_AMXX_CopyTree( privroot );
                 }
+
+#if XASH_ANDROID
+                // A7 build 137 (items 3+4): since the addon zips stop writing
+                // .so to /sdcard (and the launchers purge the leftovers), the
+                // shipped metamod / AMX core / libamxx_* modules are seeded
+                // into the private tree ABOVE FROM THE APK LIB DIR - one ABI
+                // per package, so this copy path can never mix architectures
+                // anymore. Custom modules the user installed keep coming from
+                // the gamedir copy (COM_AMXX_CopyTree) - both live together
+                // in the single MM_GAMELIBDIR root handed to the loader.
+                if( privroot[0] && COM_AMXX_SeedFromAPK( privroot ))
+                        ready = true;
+#endif
         }
 
         // runs for both branches below: needs only the gamedir plugins.ini
         COM_AMXX_FakeClientChain();
+
+        /* A7 build 137 (items 3+4, user: "fix libs in xash folder should not
+         * be there like amxmodx metamod, only inside apk finding gamedir,
+         * for all androids ... fix in liblist.gam trying to find regamedll
+         * and metamod, make it method easy work without liblist.gam"): serve
+         * EVERY server-side library from the APK's own nativeLibraryDir
+         * (XASH3D_GAMELIBDIR, set by XashActivity.getArguments() from the
+         * "gamelibdir" extra = getApplicationInfo().nativeLibraryDir). The
+         * APK packages exactly ONE ABI in that directory - libmetamod_android_*
+         * libmm_amxmodx libamxx_* libcs_android_* / libhl_android_* - so this
+         * path is single-ABI by construction (no mixing possible) and needs
+         * NOTHING on /sdcard: metadata (plugins.ini/modules.ini) stays
+         * gamedir-side, libraries never do. Checked before the /sdcard copy
+         * chain so a device that still has old .so leftovers ignores them.
+         * Only used when the PRIVATE-dir route above is unavailable (neither
+         * XASH3D_AMXX_LIBDIR nor XASH3D_RODIR set): normally the seeded
+         * private tree answers and MM_GAMELIBDIR points at it, keeping the
+         * user's custom modules (Modules tab) loadable alongside.
+         */
+        if( !ready )
+        {
+                char apkmetamod[MAX_SYSPATH];
+                char gamelib[MAX_SYSPATH];
+
+                if( COM_AMXX_APKLibDir( apkmetamod, sizeof( apkmetamod )))
+                {
+                        const char *apkdir = getenv( "XASH3D_GAMELIBDIR" );
+                        qboolean gamedll_set = false;
+
+                        // hand metamod the regamedll that ships in the same
+                        // lib dir (engine-generated name, or the alternate
+                        // arch spelling - armv7a vs armv7l naming differs
+                        // between build systems)
+                        if( !COM_StringEmptyOrNULL( realdll ) && !Q_stristr( realdll, "metamod" ))
+                        {
+                                const char *bn = COM_FileWithoutPath( realdll );
+
+                                Q_snprintf( gamelib, sizeof( gamelib ), "%s/%s", apkdir, bn );
+
+                                if( access( gamelib, R_OK ) == 0 )
+                                {
+                                        setenv( "MM_GAMEDLL", gamelib, 1 );
+                                        gamedll_set = true;
+                                }
+                                else
+                                {
+                                        const char *plat = Q_strstr( bn, "_android_" );
+
+                                        if( plat )
+                                        {
+                                                int stemlen = ( int )( plat - bn ) + ( int )strlen( "_android_" );
+
+                                                for( int k = 0; k < ( int )sizeof( archnames ) / sizeof( archnames[0] ); k++ )
+                                                {
+                                                        if( COM_StringEmpty( archnames[k] ))
+                                                                continue;
+
+                                                        Q_snprintf( gamelib, sizeof( gamelib ), "%s/%.*s%s.so",
+                                                                apkdir, stemlen, bn, archnames[k] );
+
+                                                        if( access( gamelib, R_OK ) == 0 )
+                                                        {
+                                                                setenv( "MM_GAMEDLL", gamelib, 1 );
+                                                                gamedll_set = true;
+                                                                break;
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+
+                        // flat APK lib dir == the module dir amxx expects
+                        // (<root>/libamxx_<module>.so, modules.cpp LoadModule)
+                        setenv( "MM_GAMELIBDIR", apkdir, 1 );
+
+                        // MM_ADDONS_ROOT is deliberately NOT set: metamod's
+                        // stat_plugin_file() and android_dlopen_fallback()
+                        // already fall back to XASH3D_GAMELIBDIR/<basename>
+                        // for the gamedir pathnames in plugins.ini
+
+                        setenv( "XASH3D_AMXX_TRIED", "1", 1 );
+
+                        Con_Printf( "[A7] build137: server libs from the APK lib dir (metamod %s, gamedll %s)\n",
+                                apkmetamod, gamedll_set ? gamelib : "<generated-name probe>" );
+
+                        Q_strncpy( out, apkmetamod, size );
+                        return true;
+                }
+        }
 
         if( !ready )
         {
@@ -614,6 +902,34 @@ void COM_GetCommonLibraryPath( ECommonLibraryType eLibType, char *out, size_t si
                         else Q_strncpy( out, host.gamedll, size );
                 }
                 else COM_GenerateServerLibraryPath( NULL, out, size );
+
+#if XASH_ANDROID
+                /* A7 build 137 (item 3): the generated server library name
+                 * (e.g. "dlls/libcs_android_arm64.so") only exists inside the
+                 * APK on Android - no gamedir on /sdcard ever carries it (the
+                 * addon zips ship no dlls/, and this build writes no .so to
+                 * /sdcard at all). Translate it to the absolute file in
+                 * XASH3D_GAMELIBDIR (nativeLibraryDir) so a DIRECT load (the
+                 * AMX Mod X path disabled, or metamod absent) and the
+                 * MM_GAMEDLL hand-off below both work without liblist.gam and
+                 * without any library on shared storage. */
+                {
+                        const char *apkdir = getenv( "XASH3D_GAMELIBDIR" );
+
+                        if( !COM_StringEmptyOrNULL( apkdir ) && out[0] && out[0] != '/' )
+                        {
+                                char probe[MAX_SYSPATH];
+
+                                Q_snprintf( probe, sizeof( probe ), "%s/%s", apkdir, COM_FileWithoutPath( out ));
+
+                                if( access( probe, R_OK ) == 0 )
+                                {
+                                        Q_strncpy( out, probe, size );
+                                        Con_Reportf( "%s: server library resolved from the APK lib dir: %s\n", __func__, out );
+                                }
+                        }
+                }
+#endif
 
 #if XASH_LINUX
                 // AMX Mod X support: automatically load metamod instead of the
