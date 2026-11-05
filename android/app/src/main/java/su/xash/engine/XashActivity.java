@@ -331,10 +331,16 @@ public class XashActivity extends SDLActivity {
 				if (mLoadingOverlay == null) return;
 				try {
 					if (file == null || file.length() == 0) {
+						// A7 build 135 (item 6, user: "after completion files
+						// must not show again - just like normal loading"):
+						// the transfer row folds with EVERYTHING it carried,
+						// the bare file counter included - a leftover count
+						// is part of the download view, not of normal loading
 						if (mLoadingDlName != null) mLoadingDlName.setVisibility(View.GONE);
 						if (mLoadingDlStatus != null) mLoadingDlStatus.setVisibility(View.GONE);
 						if (mLoadingDlBar != null) mLoadingDlBar.setVisibility(View.GONE);
 						if (mLoadingDlFooter != null) mLoadingDlFooter.setVisibility(View.GONE);
+						if (mLoadingDlCount != null) mLoadingDlCount.setVisibility(View.GONE);
 						if (mLoadingDlRow != null) mLoadingDlRow.setVisibility(View.GONE);
 						moveLoadingCancel(mLoadingBarRow);
 						return;

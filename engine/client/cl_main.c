@@ -3757,6 +3757,12 @@ screen again.
 // once the transfer phase ends
 static qboolean s_pl_dlblock = false;
 static char s_pl_dlfile[MAX_SYSPATH];
+// A7 build 135 (item 6, user: "after completion files must not show again -
+// just like normal loading"): idle frames of the open block (nothing queued,
+// no classic file stream, no fastdl progress). At 60 the block folds even if
+// the closer that belongs to this load was missed, so the file row can never
+// outlive the transfer phase.
+static int s_pl_dlidle = 0;
 
 // build 103 (user: "fix loading return how it was, just fix loading
 // download"): the phase line is the plain build-100 sentence again - no
@@ -3792,12 +3798,14 @@ void CL_LoadingDownloadBlock( const char *file, qboolean open )
 	{
 		Q_strncpy( s_pl_dlfile, file, sizeof( s_pl_dlfile ));
 		s_pl_dlblock = true;
+		s_pl_dlidle = 0;
 		Android_LoadingDownload( s_pl_dlfile, 0.0f, "Downloading from server...", NULL );
 	}
 	else
 	{
 		s_pl_dlblock = false;
 		s_pl_dlfile[0] = '\0';
+		s_pl_dlidle = 0;
 		Android_LoadingDownload( NULL, 0.0f, NULL, NULL );
 	}
 #else
@@ -3859,24 +3867,35 @@ static void CL_LoadingFeed( void )
 	if( s_pl_dlblock )
 	{
 		float dl = ( scr_download.value >= 0.0f ) ? scr_download.value : 0.0f;
-		// A7 build 126 (item 3, user: "show how many left to finish
-		// download like original cs1.6 goldsource"): host.downloadcount is
-		// the number of resources still waiting (recounted every pass in
-		// CL_ProcessResources, shrinks as both the classic stream and fastdl
-		// land files), so the same number is correct for goldsource AND xash
-		// servers. The window renders it on its own footer line - no text
-		// change in the status sentence, no cvar touched.
-		char footer[48];
-		int left = host.downloadcount;
 
-		if( left > 0 )
+		// A7 build 135 (item 6, user: "i didn't say add file left percent"):
+		// the "%d file(s) left" footer is GONE - it was never asked for. The
+		// window keeps its own bare file counter beside the bar (that one was
+		// requested), this side only carries the file name + bar + status.
+
+		// A7 build 135 (item 6, user: "after completion files must not show
+		// again - just like normal loading"): belt for the closer. Fastdl and
+		// the classic stream each fold the block themselves (drain in
+		// HTTP_Run, host.downloadcount hitting 0 in Netchan_UpdateProgress),
+		// but if either closer is missed the row used to sit there forever.
+		// When NOTHING is transferring any more - no resource waiting, no
+		// file stream inbound, no fastdl progress - for a full second, fold
+		// it here; only a real new download can raise it again.
+		if( scr_download.value < 0.0f && !host.downloadcount
+			&& !cls.netchan.incomingbufs[FRAG_FILE_STREAM] )
+			s_pl_dlidle++;
+		else s_pl_dlidle = 0;
+
+		if( s_pl_dlidle >= 60 )
 		{
-			Q_snprintf( footer, sizeof( footer ), "%d file%s left",
-				left, ( left == 1 ) ? "" : "s" );
-			Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", footer );
+			Con_Printf( "[A7] build135: download block folded (nothing left to transfer)\n" );
+			CL_LoadingDownloadBlock( NULL, false );
+			return;
 		}
-		else Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", NULL );
+
+		Android_LoadingDownload( s_pl_dlfile, dl, "Downloading from server...", NULL );
 	}
+	else s_pl_dlidle = 0;
 }
 #endif // XASH_ANDROID
 
