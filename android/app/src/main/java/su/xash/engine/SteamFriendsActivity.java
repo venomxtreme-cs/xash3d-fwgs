@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.ViewGroup;
@@ -100,6 +101,19 @@ public class SteamFriendsActivity extends Activity {
 	private File mGameDir;
 	private String mSteamId = "";
 
+	// A7 build 138 (round 137 item 1, user: "fix login steam just using
+	// chrome if it signed in just turn back to cs16fresh app"): Chrome
+	// and this WebView never share cookies and there is no return_url
+	// bounce (no server of ours), so the browser can only be step one of
+	// the flow - it signs you in quickly, and the moment we are back the
+	// friends page continues the sign-in inside the app (Chrome's saved
+	// password comes over through Android autofill). mReturnFromBrowser
+	// is the one-shot "we just came back from the hand-off" latch;
+	// mSignedInViaBrowser stays set until extract() sees the Steam ID,
+	// which closes this screen straight back to the game.
+	private boolean mReturnFromBrowser = false;
+	private boolean mSignedInViaBrowser = false;
+
 	@Override
 	protected void onCreate( Bundle savedInstanceState )
 	{
@@ -151,7 +165,75 @@ public class SteamFriendsActivity extends Activity {
 
 		mSteamId = readAccountFile( "steamid" );
 		setStatus( mSteamId.isEmpty() ? "Not signed in" : ( "Signed in: " + mSteamId ));
-		mWeb.loadUrl( mSteamId.isEmpty() ? URL_LOGIN : URL_FRIENDS );
+
+		if( mSteamId.isEmpty())
+		{
+			// A7 build 138 (round 137 item 1): no session - the sign-in
+			// starts in Chrome right away. onResume() runs straight after
+			// onCreate() and continues the flow inside the app (or the
+			// browser fallback below has already loaded the login page).
+			openChromeSignIn();
+		}
+		else
+		{
+			mWeb.loadUrl( URL_FRIENDS );
+		}
+	}
+
+	// A7 build 138 (round 137 item 1): hand the Steam sign-in to the
+	// user's browser - Chrome first (it is what the user asked for, and
+	// its saved passwords make the login one tap), any other browser as
+	// a fallback, and the in-app WebView as the last resort when no
+	// browser exists at all. The ?redir= makes Steam come back to the
+	// friends URL, which is where we continue when the user returns.
+	private void openChromeSignIn()
+	{
+		String url = URL_LOGIN;
+		try
+		{
+			url += "?redir=" + java.net.URLEncoder.encode( URL_FRIENDS, "UTF-8" );
+		}
+		catch( Throwable ignored )
+		{
+		}
+
+		final String loginUrl = url;
+
+		// 1) Chrome by name
+		try
+		{
+			Intent chrome = new Intent( Intent.ACTION_VIEW, Uri.parse( loginUrl ));
+			chrome.setPackage( "com.android.chrome" );
+			chrome.addCategory( Intent.CATEGORY_BROWSABLE );
+			startActivity( chrome );
+			mReturnFromBrowser = true;
+			setStatus( "Opening Chrome - sign in, then you come back here" );
+			Log.i( TAG, "[A7] build138: Steam sign-in handed to Chrome" );
+			return;
+		}
+		catch( Throwable ignored )
+		{
+		}
+
+		// 2) any other installed browser
+		try
+		{
+			Intent any = new Intent( Intent.ACTION_VIEW, Uri.parse( loginUrl ));
+			any.addCategory( Intent.CATEGORY_BROWSABLE );
+			startActivity( any );
+			mReturnFromBrowser = true;
+			setStatus( "Opening the browser - sign in, then you come back here" );
+			Log.i( TAG, "[A7] build138: Steam sign-in handed to the system browser (no Chrome)" );
+			return;
+		}
+		catch( Throwable ignored )
+		{
+		}
+
+		// 3) no browser on the device at all - sign in right here
+		Log.i( TAG, "[A7] build138: no browser found, in-app Steam sign-in fallback" );
+		setStatus( "Sign in below (no browser available)" );
+		mWeb.loadUrl( loginUrl );
 	}
 
 	// ------------------------------------------------------------------
@@ -175,7 +257,10 @@ public class SteamFriendsActivity extends Activity {
 		addButton( bar, "Back", v -> {
 			if( mWeb.canGoBack()) mWeb.goBack();
 		});
-		addButton( bar, "Sign in", v -> mWeb.loadUrl( URL_LOGIN ));
+		// A7 build 138 (round 137 item 1): the sign-in button goes to
+		// Chrome - on return the flow finishes itself in-app and the
+		// screen auto-closes back to cs16fresh once the ID is captured
+		addButton( bar, "Sign in", v -> openChromeSignIn());
 		addButton( bar, "Friends", v -> mWeb.loadUrl( URL_FRIENDS ));
 		addButton( bar, "Close", v -> finish());
 
@@ -298,6 +383,20 @@ public class SteamFriendsActivity extends Activity {
 				// entry of my row's chain that the server cannot supply)
 				writeFriendAvatars( o.optJSONArray( "ents" ));
 				fetchMyAvatar( o.optString( "self", "" ));
+
+				// A7 build 138 (round 137 item 1, the second half of
+				// "if it signed in just turn back to cs16fresh app"):
+				// the sign-in was started in Chrome and finished in this
+				// WebView - the id and the whole friends payload are on
+				// disk now, so close the screen and land back in the game
+				// without another tap. A screen that was opened without the
+				// browser hand-off never takes this branch.
+				if( mSignedInViaBrowser && !mSteamId.isEmpty())
+				{
+					mSignedInViaBrowser = false;
+					Log.i( TAG, "[A7] build138: Steam signed in via Chrome, returning to cs16fresh" );
+					finish();
+				}
 			}
 		}
 		catch( Throwable t )
@@ -650,6 +749,20 @@ public class SteamFriendsActivity extends Activity {
 		super.onResume();
 		if( mWeb != null )
 			mWeb.onResume();
+
+		// A7 build 138 (round 137 item 1): we are back from the Chrome
+		// hand-off - continue the sign-in right here. The friends page
+		// loads in this WebView, Android autofill offers the passwords
+		// Chrome saved, and applyExtract() closes the screen itself as
+		// soon as the Steam ID shows up.
+		if( mReturnFromBrowser )
+		{
+			mReturnFromBrowser = false;
+			mSignedInViaBrowser = true;
+			Log.i( TAG, "[A7] build138: back from the browser, finishing the Steam sign-in in-app" );
+			if( mWeb != null )
+				mWeb.loadUrl( URL_FRIENDS );
+		}
 	}
 
 	@Override
