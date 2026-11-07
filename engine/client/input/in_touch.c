@@ -193,6 +193,40 @@ static void IN_TouchEditClear( void );
 static void Touch_InitConfig( void );
 static void Touch_ResetSticks( void );
 
+static void Touch_FitToAspect( float current_ratio )
+{
+	// A7 build 143 (round 143 item 9, user: "when i choosed screen like
+	// example 800x600 should fix touch button like fix correct place, all
+	// of them"): remap every button's y range from the ratio the layout
+	// was saved at (touch.config_aspect_ratio) onto the ratio the
+	// renderer has NOW - the exact conversion Touch_EnableEdit_f always
+	// performed on entering the editor, extracted so a runtime
+	// resolution change (the new Options -> Video modes picker) can
+	// refit without opening the editor at all.
+	if( touch.config_aspect_ratio <= 0.0f || current_ratio <= 0.0f )
+		return; // nothing saved to convert from
+
+	if( fabs( touch.config_aspect_ratio - current_ratio ) < 0.005 )
+		return; // already fitted - the common, every-frame case: no-op
+
+	for( touch_button_t *button = touch.list_user.first; button; button = button->next )
+	{
+		// y coordinates are stored relative to the SAVED ratio; scale
+		// them exactly like the editor does
+		button->y1 /= current_ratio / touch.config_aspect_ratio;
+		button->y2 /= current_ratio / touch.config_aspect_ratio;
+
+		// clamp positions to make buttons visible by user
+		if( button->y2 > 1.0f )
+		{
+			button->y1 -= button->y2 - 1.0f;
+			button->y2 -= button->y2 - 1.0f;
+		}
+	}
+
+	touch.config_aspect_ratio = current_ratio;
+}
+
 void Touch_NotifyResize( void )
 {
 	Touch_UpdateViewport();
@@ -202,6 +236,14 @@ void Touch_NotifyResize( void )
 		if( aspect_ratio < 0.99 && aspect_ratio > touch.actual_aspect_ratio )
 			touch.actual_aspect_ratio = aspect_ratio;
 	}
+
+	// A7 build 143 (round 143 item 9): a runtime resolution change ->
+	// refit every button right away, so the whole touch layout lands at
+	// the new geometry. Outside the editor only (the editor owns the
+	// coordinates while open and does its own conversion), and only when
+	// the saved ratio really differs - otherwise this is a no-op.
+	if( touch.state == state_none && refState.width && refState.height )
+		Touch_FitToAspect((float)refState.height / refState.width );
 }
 
 static inline float Touch_ProfileAspectRatio( void )
@@ -1082,22 +1124,11 @@ static void Touch_EnableEdit_f( void )
 	touch.actual_aspect_ratio = current_ratio;
 
 	// convert coordinates to actual aspect ratio after it was updated
-	if( touch.config_aspect_ratio != touch.actual_aspect_ratio )
-	{
-		for( touch_button_t *button = touch.list_user.first; button; button = button->next )
-		{
-			button->y1 /= touch.actual_aspect_ratio / touch.config_aspect_ratio;
-			button->y2 /= touch.actual_aspect_ratio / touch.config_aspect_ratio;
-
-			// clamp positions to make buttons visible by user
-			if( button->y2 > 1.0f )
-			{
-				button->y1 -= button->y2 - 1.0f;
-				button->y2 -= button->y2 - 1.0f;
-			}
-		}
-		touch.config_aspect_ratio = touch.actual_aspect_ratio;
-	}
+	// A7 build 143 (item 9): the conversion moved into Touch_FitToAspect
+	// (same math, epsilon no-op instead of exact !=) - one implementation
+	// shared with Touch_NotifyResize, which refits on a runtime
+	// resolution change while the editor stays closed
+	Touch_FitToAspect( touch.actual_aspect_ratio );
 }
 
 static void Touch_DeleteProfile_f( void )
@@ -1153,6 +1184,11 @@ void Touch_Init( void )
 	touch.mempool = Mem_AllocPool( "Touch" );
 	//touch.first = touch.last = NULL;
 	Con_Printf( "%s()\n", __func__ );
+	// A7 build 143 (round 143 item 9): one-shot marker - Touch_FitToAspect
+	// now refits every button at a runtime resolution change (the new
+	// Options -> Video modes picker); scan112 scans for this literal in
+	// libxash (Touch_Init runs once, so this never repeats)
+	Con_Printf( "[A7] build143: touch refit-on-resize active (round 143 item 9)\n" );
 	touch.resize_finger = touch.move_finger = touch.look_finger = touch.wheel_finger = -1;
 	touch.state = state_none;
 	touch.showeditbuttons = true;

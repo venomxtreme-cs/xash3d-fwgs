@@ -1020,7 +1020,17 @@ static void R_CheckCvars( void )
 	{
 		ClearBits( r_vbo.flags, FCVAR_CHANGED );
 
-		R_EnableVBO( r_vbo.value ? true : false );
+		// A7 build 143 (round 143 item 8, user: "in game maps has error
+		// textures becuase of vbo ... no need enabled vbo on settings
+		// video rendering remove it just solve problem"): the VBO path is
+		// force-OFF. r_vbo keeps its value (NO cvar default changes) but
+		// is no longer consulted - VBO broke textures on Mali/GLES and
+		// the menu no longer offers the toggle (Configuration.cpp build
+		// 143). With the enable stubbed, R_GenerateVBO never runs either.
+		// The local keeps the condition non-literal so no unreachable
+		// -code warnings fire on the block below.
+		qboolean vboForcedOff = true;
+		R_EnableVBO(( !vboForcedOff && r_vbo.value ) ? true : false );
 		if( R_HasEnabledVBO( ))
 			R_GenerateVBO();
 
@@ -1045,6 +1055,18 @@ R_BeginFrame
 */
 void R_BeginFrame( qboolean clearScene )
 {
+	// A7 build 143 (round 143 item 8): one-shot marker - VBO is
+	// force-off (R_CheckCvars stubs the enable below, r_vbo is never
+	// consulted) because VBO broke textures on Mali/GLES. scan112 scans
+	// for this literal in the ref libs; a static guard keeps it to a
+	// single line ever
+	static qboolean s_nb143VboLogged = false;
+	if( !s_nb143VboLogged )
+	{
+		s_nb143VboLogged = true;
+		gEngfuncs.Con_Printf( "[A7] build143: VBO force-off active (round 143 item 8)\n" );
+	}
+
 	glConfig.softwareGammaUpdate = false;	// in case of possible fails
 
 	GL_CheckRenderTargets();

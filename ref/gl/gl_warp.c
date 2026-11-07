@@ -561,9 +561,30 @@ static void R_RunRipplesAnimation( const short *oldbuf, short *pbuf )
 
 void R_AnimateRipples( void )
 {
+	// A7 build 143 (round 143 item 8): one-shot marker - the ripple
+	// simulation is force-off (see the update flag below), so water keeps
+	// the plain warp path and never pays for the effect; scan112 scans
+	// for this literal in the ref libs (static guard = one line ever)
+	static qboolean s_nb143RippleLogged = false;
+	if( !s_nb143RippleLogged )
+	{
+		s_nb143RippleLogged = true;
+		gEngfuncs.Con_Printf( "[A7] build143: water ripple sim force-off (round 143 item 8)\n" );
+	}
+
 	double frametime = gp_cl->time - g_ripple.time;
 
-	g_ripple.update = r_ripple.value && frametime >= r_ripple_updatetime.value;
+	// A7 build 143 (round 143 item 8, user: "also for water ripples no
+	// need enabled, just make it work"): the ripple simulation is
+	// force-OFF. r_ripple defaults to 0 but an old config can still carry
+	// 1 - the sim glitched water on some GLES drivers and cost CPU for an
+	// effect nobody turns on. The cvar is NEVER WRITTEN (no default /
+	// cvar-value changes), it is just not consulted, and water keeps the
+	// plain warp path (R_UploadRipples below takes its plain branch).
+	// The local keeps the condition non-literal so no unreachable-code
+	// warning fires on the block below.
+	qboolean ripplesForcedOff = true;
+	g_ripple.update = !ripplesForcedOff && r_ripple.value && frametime >= r_ripple_updatetime.value;
 
 	if( !g_ripple.update )
 		return;
@@ -611,7 +632,10 @@ qboolean R_UploadRipples( texture_t *image )
 {
 	qboolean update = g_ripple.update;
 
-	if( !r_ripple.value )
+	// A7 build 143 (round 143 item 8): always the plain upload branch -
+	// never the ripple texcoord re-upload (see R_AnimateRipples)
+	qboolean ripplesForcedOff = true;
+	if( !r_ripple.value || ripplesForcedOff )
 	{
 		GL_Bind( XASH_TEXTURE0, image->gl_texturenum );
 		return false;
