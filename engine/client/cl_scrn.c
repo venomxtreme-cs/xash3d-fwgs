@@ -484,6 +484,42 @@ void SCR_MakeScreenShot( void )
 
 /*
 ================
+SCR_DrawBackdropGradient
+
+A7 build 146 (round 146 item 1, user: "Windows still shows a black
+loading screen ... not same like android in logo and others"): the Android
+Java loading window is NEVER black - XashActivity.makeLoadingBackground
+falls back to the 0xFF2A3140 -> 0xFF14181F vertical gradient when the CS
+collage art is not available. Paint the same gradient: used for the
+loading-plaque fill (instead of the build-92 plain black) and - through
+VID_Init - for the very first present of the window, so the whole
+engine-init stretch before the first frame shows loading art, not an
+empty black window like a raw GoldSource startup.
+================
+*/
+void SCR_DrawBackdropGradient( void )
+{
+	int	i, bands = 48;
+	int	bandH = ( refState.height + bands - 1 ) / bands;
+
+	for( i = 0; i < bands; i++ )
+	{
+		float	t = (float)i / (float)( bands - 1 );
+		int	y = i * bandH;
+		int	h = Q_min( bandH, refState.height - y );
+
+		// top 0x2A3140 -> bottom 0x14181F (Java gradient; both steps are
+		// monotonic downwards, so the float->byte math never underflows)
+		byte	r = (byte)( 0x2A + (( 0x14 - 0x2A ) * t ));
+		byte	g = (byte)( 0x31 + (( 0x18 - 0x31 ) * t ));
+		byte	b = (byte)( 0x40 + (( 0x1F - 0x40 ) * t ));
+
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, 0, y, refState.width, h, r, g, b, 255 );
+	}
+}
+
+/*
+================
 SCR_DrawPlaque
 ================
 */
@@ -509,10 +545,13 @@ static qboolean SCR_DrawPlaque( void )
 	}
 	else
 	{
-		// A7 build 92: PC GoldSource loads on a plain black backdrop (the
-		// olive tint and the centered loading art are both gone) - the
-		// levelshot above still shows when the mod provides one
-		ref.dllFuncs.FillRGBA( kRenderTransTexture, 0, 0, refState.width, refState.height, 0, 0, 0, 255 );
+		// A7 build 92: PC GoldSource loads without the olive tint and the
+		// centered loading art - the levelshot above still shows when the
+		// mod provides one. Build 146: the fallback is NO LONGER plain
+		// black - it is the Android loading window's never-black gradient,
+		// so a latched frame drawn before the GameUI dialog is up (or with
+		// no dialog at all) can never show the user a black screen
+		SCR_DrawBackdropGradient();
 	}
 
 	// A7 build 95: the bottom LOADING band is gone for every interactive

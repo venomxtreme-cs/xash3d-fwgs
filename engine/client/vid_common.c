@@ -260,6 +260,29 @@ void VID_Init( void )
 
 	V_Init(); // init gamma
 	R_Init(); // init renderer
+
+#if !XASH_ANDROID
+	// A7 build 146 (round 146 item 1, user: "Windows still shows a black
+	// loading screen"): the window + GL context are created INSIDE R_Init
+	// (VID_CreateWindow -> SDL_ShowWindow), but the first engine frame is
+	// up to ~2.4 s later ("Time to first frame: 2.409 seconds" on the
+	// bench: menu DLL, client.dll, valve.rc/config.cfg execs and the
+	// command-line +map all run before the frame loop starts). For that
+	// whole stretch the OS showed an empty BLACK window - while on Android
+	// the Java loading window (collage or its 0xFF2A3140 -> 0xFF14181F
+	// gradient) is raised before any of this. Present that same gradient
+	// NOW: one draw pass + one swap, before the heavy init begins. Nothing
+	// clears the buffer until the frame loop renders, so it stays up as the
+	// loading backdrop until the menu's first real frame replaces it.
+	// Never runs on Android: the platform loading window owns the surface
+	// there and never shows black in the first place.
+	if( ref.initialized && refState.width > 0 && refState.height > 0 )
+	{
+		ref.dllFuncs.R_Set2DMode( true );
+		SCR_DrawBackdropGradient();
+		ref.dllFuncs.R_EndFrame(); // flush 2D + present: the black window is gone
+	}
+#endif // XASH_ANDROID
 }
 
 #if XASH_ENGINE_TESTS

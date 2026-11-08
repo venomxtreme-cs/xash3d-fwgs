@@ -973,6 +973,9 @@ void SCR_VidInit( void );
 void SCR_TileClear( void );
 void SCR_DirtyScreen( void );
 void SCR_EndLoadingPlaque( void );
+// A7 build 146 (round 146 item 1): never-black backdrop (the Android
+// loading window's 0xFF2A3140 -> 0xFF14181F fallback gradient)
+void SCR_DrawBackdropGradient( void );
 int SCR_LoadPauseIcon( void );
 void SCR_RegisterTextures( void );
 void SCR_LoadCreditsFont( void );

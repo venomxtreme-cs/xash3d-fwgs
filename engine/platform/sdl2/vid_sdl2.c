@@ -29,6 +29,7 @@ GNU General Public License for more details.
 static vidmode_t *vidmodes = NULL;
 static int num_vidmodes = 0;
 static void GL_SetupAttributes( void );
+static void VID_ShowWindowOnce( void ); // A7 build 146, defined next to VID_CreateWindow
 static struct
 {
 	int prev_width, prev_height;
@@ -205,6 +206,9 @@ void SW_UnlockBuffer( void )
 
 
 		SDL_RenderCopy(sw.renderer, sw.tex, &src, &dst);
+#if !XASH_MOBILE_PLATFORM
+		VID_ShowWindowOnce(); // A7 build 146: same as GL_SwapBuffers
+#endif
 		SDL_RenderPresent(sw.renderer);
 
 		return;
@@ -228,6 +232,9 @@ void SW_UnlockBuffer( void )
 	// already blitted
 	SDL_UnlockSurface( sw.win );
 
+#if !XASH_MOBILE_PLATFORM
+	VID_ShowWindowOnce(); // A7 build 146: same as GL_SwapBuffers
+#endif
 	SDL_UpdateWindowSurface( host.hWnd );
 }
 
@@ -727,6 +734,30 @@ void VID_RestoreScreenResolution( window_mode_t window_mode )
 #endif // !XASH_MOBILE_PLATFORM
 }
 
+// A7 build 146 (round 146 item 1, user: "Windows still shows a black
+// loading screen ... not same like android"): the window used to be shown
+// the moment it was created - inside ref R_Init, a full ~0.8 s before the
+// engine has anything at all to draw - so for that whole stretch the user
+// saw an EMPTY BLACK window, the exact GoldSource-style startup the Android
+// loading window (collage or its 0xFF2A3140 -> 0xFF14181F gradient) exists
+// to replace. Defer the show to the FIRST real present: whatever we draw
+// first - on PC that is SCR_DrawBackdropGradient's loading gradient, pushed
+// right after R_Init returns - is what the window opens with, so it is
+// never on screen as black. Android keeps the old eagerly-shown behavior
+// under XASH_ANDROID: there the Java loading window owns the surface and
+// this was never the user-visible path.
+static qboolean vid_window_shown = false;
+
+static void VID_ShowWindowOnce( void )
+{
+	if( vid_window_shown || !host.hWnd )
+		return;
+
+	vid_window_shown = true;
+	SDL_ShowWindow( host.hWnd );
+	SDL_RaiseWindow( host.hWnd );
+}
+
 /*
 =================
 VID_CreateWindow
@@ -769,8 +800,16 @@ static rserr_t VID_CreateWindow( const int input_width, const int input_height, 
 	}
 
 	VID_SetWindowIcon( host.hWnd );
+#if XASH_MOBILE_PLATFORM
 	SDL_ShowWindow( host.hWnd );
 	SDL_RaiseWindow( host.hWnd );
+	vid_window_shown = true;
+#else
+	// keep it HIDDEN until the first present so it can never appear as a
+	// black rectangle (see VID_ShowWindowOnce) - a brand new window has to
+	// be re-armed for that
+	vid_window_shown = false;
+#endif
 
 	if( glw_state.software )
 	{
@@ -894,6 +933,11 @@ void GL_SwapBuffers( void )
 	double t0, dt;
 
 	t0 = Sys_DoubleTime();
+#if !XASH_MOBILE_PLATFORM
+	// A7 build 146: raise the (still hidden) window on the first present,
+	// so it opens with loading art instead of sitting black on the desktop
+	VID_ShowWindowOnce();
+#endif // XASH_MOBILE_PLATFORM
 	SDL_GL_SwapWindow( host.hWnd );
 	dt = Sys_DoubleTime() - t0;
 
