@@ -3828,13 +3828,58 @@ down.
 static void CL_LoadingFeed( void )
 {
 	float pct;
+	// A7 build 144 (round 144 items 2+3): throttle for the auto-re-show
+	// attempts below - a persistent JNI miss would otherwise raise + log
+	// once per frame (the build-98 one-shot already names a dead method)
+	static double s_r144reshow = 0.0;
 
 	// signon finished: the game owns the screen again
 	if( cls.signon == SIGNONS )
 	{
-		if( Android_LoadingShown( ))
-			Con_Printf( "[A7] loading: signon complete, hiding overlay\n" );
-		Android_LoadingHide();
+		// A7 build 144 (round 144 items 2+3, user: "when servers changed
+		// map or if i join any server , sometime it didn't show touch
+		// buttons and with black screen like i can't even play"): signon
+		// can reach SIGNONS while the plaque latch is STILL set - the
+		// canonical SCR_EndLoadingPlaque was missed on that path. The old
+		// code only hid the cover here, and while cls.disable_screen stays
+		// latched the engine draws NOTHING (V_PreRender refuses -> neither
+		// SCR_DrawPlaque nor the 2d chain, Touch_Draw included, ever runs)
+		// = black screen and NO touch buttons until the 60s watchdog.
+		// Close the load through the canonical path instead: latch down,
+		// dialog closed, key_dest back to the game, window hidden - one
+		// step, and the very next frame renders the game again.
+		if( cls.disable_screen )
+		{
+			Con_Printf( "[A7] build144: signon with latch - ending load canonically\n" );
+			SCR_EndLoadingPlaque();
+		}
+		else
+		{
+			if( Android_LoadingShown( ))
+				Con_Printf( "[A7] loading: signon complete, hiding overlay\n" );
+			Android_LoadingHide();
+		}
+
+		// belt: with the load over, key_dest parked on an EMPTY menu
+		// draws nothing at all (UI_UpdateMenu needs a window, touch
+		// refuses everything outside key_game) - hand input back to the
+		// game so a stale key_menu can never strand him on a black screen
+		if( !cls.disable_screen && cls.key_dest == key_menu && !UI_IsVisible( ))
+		{
+			Con_Printf( "[A7] build144: empty menu key_dest handed back to game\n" );
+			Key_SetKeyDest( key_game );
+		}
+
+		// second half of the same belt: CL_Connect_f parks key_dest on the
+		// console during the join, and if nothing took it back the closed
+		// console leaves the game drawn but touch disabled (Touch_Draw
+		// refuses everything outside key_game) - "didn't show touch
+		// buttons" while he could still see the world
+		if( !cls.disable_screen && cls.key_dest == key_console && !Con_Visible( ))
+		{
+			Con_Printf( "[A7] build144: closed-console key_dest handed back to game\n" );
+			Key_SetKeyDest( key_game );
+		}
 		return;
 	}
 
@@ -3848,12 +3893,26 @@ static void CL_LoadingFeed( void )
 	// and the freeze watchdog - clear the latch AND hide the window
 	// (build 112), so an aborted load can never re-raise the shade over
 	// the game the way 111 did.
-	if( cls.disable_screen && !Android_LoadingShown( ) && !cl.background && !cls.demoplayback )
+	// A7 build 144 (items 2+3): the !cl.background exclusion is GONE.
+	// A background-flag load latches cls.disable_screen all the same, and
+	// its latched frames render nothing (V_PreRender refuses, UI_UpdateMenu
+	// is blocked mid-load) - without the cover it was a guaranteed BLACK
+	// stretch with no touch buttons for the whole load. Every latched load
+	// now gets the window; attempts are throttled to 4/s (a JNI miss keeps
+	// Android_LoadingShown() false forever, and once the window is up the
+	// gate closes and the counter resets).
+	if( cls.disable_screen && !Android_LoadingShown( ) && !cls.demoplayback )
 	{
-		Con_Printf( "[A7] loading: auto-re-show (window was down mid-load)\n" );
-		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
-			cls.servername : "" );
+		if( host.realtime >= s_r144reshow )
+		{
+			s_r144reshow = host.realtime + 0.25;
+			Con_Printf( "[A7] loading: auto-re-show (window was down mid-load)\n" );
+			Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+				cls.servername : "" );
+		}
 	}
+	else if( Android_LoadingShown( ) && s_r144reshow > 0.0 )
+		s_r144reshow = 0.0; // healthy again: the next drop re-raises at once
 
 	pct = scr_loading.value;
 

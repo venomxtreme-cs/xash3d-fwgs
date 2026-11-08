@@ -581,6 +581,21 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 			Key_SetKeyDest( key_menu );
 	}
 
+#if XASH_ANDROID
+	// A7 build 144 (round 144 items 2+3): a background-flag load skipped
+	// the raise above entirely while still latching the screen below -
+	// latched frames draw nothing on their own (V_PreRender refuses, the
+	// GameUI cannot redraw mid-load), so that path WAS a black stretch
+	// with no touch buttons for its whole duration. Same GoldSource cover
+	// for background loads too; never double-raise a window that is up.
+	if( is_background && !cls.demoplayback && !Android_LoadingShown( ))
+	{
+		Con_DPrintf( "[A7] build144: background load raising the loading window\n" );
+		Android_LoadingShow(( cls.connect_time != 0.0f && cls.servername[0] ) ?
+			cls.servername : "" );
+	}
+#endif // XASH_ANDROID
+
 	if( cls.state == ca_disconnected || cls.disable_screen )
 	{
 		// build 90: the freeze must be latched HERE too. a local load starts
