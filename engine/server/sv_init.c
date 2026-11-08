@@ -756,6 +756,12 @@ qboolean SV_InitGame( qboolean silent )
         // the AMX Mod X chain (metamod) failed to load. Fall back to the
         // original server library for this session so the game still runs
         // (without scripting) instead of aborting the map start with an error.
+        // A7 build 144 (round 144 item 4): the AMXX chain exists only on
+        // Android (XASH3D_AMXX_TRIED / XASH3D_DISABLE_AMXX are its env
+        // handshake, and setenv is POSIX), so the fallback is compiled out
+        // when the Windows x64 engine builds - user's item 4, no amxmodx on
+        // Windows by construction
+#if XASH_ANDROID
         {
                 const char *tried = getenv( "XASH3D_AMXX_TRIED" );
 
@@ -773,6 +779,7 @@ qboolean SV_InitGame( qboolean silent )
                                 return true;
                 }
         }
+#endif // XASH_ANDROID (build 144: Windows engine keeps no AMXX path)
 
         if( !silent )
                 Sys_Warn( "can't initialize %s: %s\n", dllpath, COM_GetLibraryError( ));

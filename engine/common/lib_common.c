@@ -230,6 +230,15 @@ static void COM_GenerateServerLibraryPath( const char *alt_dllname, char *out, s
 
 =============================================================================
 */
+// A7 build 144 (round 144 item 4): the WHOLE AMX Mod X machinery below
+// (mkdir -p, copy chains, env handshake MM_* / XASH3D_AMXX_*, the fake
+// client chain, the APK libdir seed and COM_AMXX_Setup) is an Android-only
+// loader - its POSIX calls (mkdir mode argument, setenv) do not compile
+// on the Windows x64 target, and the user's item 4 forbids amxmodx there
+// anyway. Its only cross-file callers are comment references; the one real
+// call (COM_AMXX_Setup from COM_GetCommonLibraryPath's server branch) is
+// inside an existing #if XASH_ANDROID below. Omitted entirely on WIN32.
+#if XASH_ANDROID
 static void COM_AMXX_MkDirP( char *path )
 {
         char *p;
@@ -870,6 +879,7 @@ static qboolean COM_AMXX_Setup( char *out, size_t size, const char *realdll )
 
         return false;
 }
+#endif // XASH_ANDROID (build 144: Windows engine builds out the AMXX block)
 
 /*
 ==============
