@@ -1199,6 +1199,27 @@ static void Host_CheckGameLibraries( void )
 Host_InitCommon
 =================
 */
+#if !XASH_DEDICATED
+/*
+===============
+Host_WriteVidConfigs_f
+
+A7 round 147 item 3 (user: "Apply must save everything like ok, saved even
+if quitting"): renderer/video state used to reach disk ONLY inside
+CL_Shutdown, so quitting hard right after pressing Apply lost it (Android
+swipe-away never runs shutdown). The Options Apply/OK flushes everything
+through host_writeconfig (config.cfg: bindings, archived cvars, info) plus
+this command (opengl.cfg + video.cfg) and touch_writeconfig (touch.cfg) -
+each of the three files now lands on disk at Apply time.
+===============
+*/
+static void Host_WriteVidConfigs_f( void )
+{
+	Host_WriteOpenGLConfig();
+	Host_WriteVideoConfig();
+}
+#endif // !XASH_DEDICATED
+
 static void Host_InitCommon( int argc, char **argv, const char *progname, qboolean bChangeGame, char *exename, size_t exename_size )
 {
 	const char *basedir = progname[0] == '#' ? progname + 1 : progname;
@@ -1324,6 +1345,9 @@ static void Host_InitCommon( int argc, char **argv, const char *progname, qboole
 
 #if !XASH_DEDICATED
 	Cmd_AddRestrictedCommand( "host_writeconfig", Host_WriteConfig, "save current configuration" );
+	// A7 round 147 item 3: the menu Apply's renderer/video half of the
+	// same flush (handler above)
+	Cmd_AddRestrictedCommand( "host_writevidconfig", Host_WriteVidConfigs_f, "save renderer and video configuration" );
 #endif
 
 	Image_Init();

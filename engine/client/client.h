@@ -1220,6 +1220,9 @@ void UI_ConnectionProgress_Precache( void );
 void UI_ConnectionProgress_Connect( const char *server );
 void UI_ConnectionProgress_ChangeLevel( void );
 void UI_ConnectionProgress_ParseServerInfo( const char *server );
+// A7 round 147 item 1b: per-frame load-phase feed into the PC loading
+// dialog - mirrors the Android loadingStatus push (cl_main.c)
+void UI_ConnectionProgress_StuffText( float flProgress, const char *pszText );
 // A7 build 97: transfer block (second bar) of the platform loading window,
 // fed from cl_main.c - open with the transferring file, close with NULL
 void CL_LoadingDownloadBlock( const char *file, qboolean open );

@@ -257,47 +257,118 @@ static void R_InitVideoModes( void )
 {
 	int display_index = 0;
 
+	// A7 round 147 item 8 (user: "return + improve the Android screen-
+	// resolution picker (dev's xash remove it) on both platforms"): the
+	// table is NEVER allowed to come up empty. SDL on Android commonly
+	// reports 0 display modes - that empty table is what the old picker
+	// died on - so fall back to the panel's desktop mode and then to the
+	// RUNNING window size; and whatever list SDL does give us, the
+	// running size is appended if missing so the picker always carries
+	// what is actually on screen. mainui keeps its build-143 synthesized
+	// ladder as the second belt.
 	num_vidmodes = 0;
 	int modes = SDL_GetNumDisplayModes( display_index );
+	int fb_w = 0, fb_h = 0;
+	qboolean fb_fallback = false;
 
-	if( !modes )
-		return;
+	if( modes <= 0 )
+	{
+		const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode( display_index );
 
-	vidmodes = Mem_Malloc( host.mempool, modes * sizeof( vidmode_t ) );
+		if( dm )
+		{
+			fb_w = dm->w;
+			fb_h = dm->h;
+		}
+
+		if( fb_w < VID_MIN_WIDTH || fb_h < VID_MIN_HEIGHT )
+		{
+			fb_w = (int)window_width.value;
+			fb_h = (int)window_height.value;
+		}
+
+		if( fb_w < VID_MIN_WIDTH || fb_h < VID_MIN_HEIGHT )
+			return; // nothing sane to offer: mainui's ladder takes over
+
+		modes = 1;
+		fb_fallback = true;
+	}
+
+	// +1 slot: the running size row appended below
+	vidmodes = Mem_Malloc( host.mempool, ( modes + 1 ) * sizeof( vidmode_t ) );
 
 	char buf[MAX_VA_STRING];
 
 	for( int i = 0; i < modes; i++ )
 	{
 		SDL_DisplayMode mode;
+		int w, h;
 
-		if( SDL_GetDisplayMode( display_index, i, &mode ) < 0 )
+		if( fb_fallback )
 		{
-			Msg( "SDL_GetDisplayMode: %s\n", SDL_GetError() );
-			continue;
+			w = fb_w;
+			h = fb_h;
 		}
+		else
+		{
+			if( SDL_GetDisplayMode( display_index, i, &mode ) < 0 )
+			{
+				Msg( "SDL_GetDisplayMode: %s\n", SDL_GetError() );
+				continue;
+			}
 
-		if( mode.w < VID_MIN_WIDTH || mode.h < VID_MIN_HEIGHT )
-			continue;
+			if( mode.w < VID_MIN_WIDTH || mode.h < VID_MIN_HEIGHT )
+				continue;
+
+			w = mode.w;
+			h = mode.h;
+		}
 
 		int j;
 		for( j = 0; j < num_vidmodes; j++ )
 		{
-			if( mode.w == vidmodes[j].width && mode.h == vidmodes[j].height )
+			if( w == vidmodes[j].width && h == vidmodes[j].height )
 				break;
 		}
 
 		if( j != num_vidmodes )
 			continue;
 
-		vidmodes[num_vidmodes].width = mode.w;
-		vidmodes[num_vidmodes].height = mode.h;
-		Q_snprintf( buf, sizeof( buf ), "%ix%i", mode.w, mode.h );
+		vidmodes[num_vidmodes].width = w;
+		vidmodes[num_vidmodes].height = h;
+		Q_snprintf( buf, sizeof( buf ), "%ix%i", w, h );
 		vidmodes[num_vidmodes].desc = copystring( buf );
 
 		num_vidmodes++;
 	}
 
+	// running size: append when the list does not already carry it, so
+	// GetConfig can highlight the mode the player is actually using
+	// (windowed custom sizes on Windows, the panel size on Android)
+	{
+		int cw = (int)window_width.value;
+		int ch = (int)window_height.value;
+		int j;
+
+		for( j = 0; j < num_vidmodes; j++ )
+		{
+			if( cw == vidmodes[j].width && ch == vidmodes[j].height )
+				break;
+		}
+
+		if( j == num_vidmodes && cw >= VID_MIN_WIDTH && ch >= VID_MIN_HEIGHT )
+		{
+			vidmodes[num_vidmodes].width = cw;
+			vidmodes[num_vidmodes].height = ch;
+			Q_snprintf( buf, sizeof( buf ), "%ix%i", cw, ch );
+			vidmodes[num_vidmodes].desc = copystring( buf );
+			num_vidmodes++;
+		}
+	}
+
+	// one-shot gate marker (round 147, item 8)
+	if( fb_fallback )
+		Con_Printf( "[A7] build147: resolution picker native fallback active (%ix%i)\n", fb_w, fb_h );
 }
 
 static void R_FreeVideoModes( void )

@@ -3750,6 +3750,24 @@ screen again.
 
 =============================================================================
 */
+// one phase sentence for the status line, matched to what the engine is
+// actually doing at this point of the load. UNCONDITIONAL as of round 147
+// item 1b: Android feeds it to the Java loading window (Android_LoadingStatus)
+// and the new PC feed below hands the SAME sentence to the ConnectionProgress
+// dialog, so both platforms word every load phase identically. build 103:
+// the phase line is the plain build-100 sentence again - no step counters
+// in the text, the window keeps its percent number instead
+static const char *CL_LoadingPhaseText( void )
+{
+	if( scr_download.value >= 0.0f )
+		return "Verifying and downloading resources...";
+	if( cls.signon > 0 )
+		return "Precaching resources...";
+	if( cls.connect_time != 0.0f )
+		return "Establishing connection...";
+	return "Starting local game server...";
+}
+
 #if XASH_ANDROID
 
 // transfer state behind the window's second bar: the block opens when a
@@ -3764,22 +3782,8 @@ static char s_pl_dlfile[MAX_SYSPATH];
 // outlive the transfer phase.
 static int s_pl_dlidle = 0;
 
-// build 103 (user: "fix loading return how it was, just fix loading
-// download"): the phase line is the plain build-100 sentence again - no
-// step counters in the text, the window keeps its percent number instead
-
-// one phase sentence for the status line, matched to what the engine is
-// actually doing at this point of the load
-static const char *CL_LoadingPhaseText( void )
-{
-	if( scr_download.value >= 0.0f )
-		return "Verifying and downloading resources...";
-	if( cls.signon > 0 )
-		return "Precaching resources...";
-	if( cls.connect_time != 0.0f )
-		return "Establishing connection...";
-	return "Starting local game server...";
-}
+// (CL_LoadingPhaseText now lives above the platform split - round 147
+// item 1b feeds the same sentence to the PC dialog)
 
 /*
 ========================
@@ -3956,6 +3960,45 @@ static void CL_LoadingFeed( void )
 	}
 	else s_pl_dlidle = 0;
 }
+
+#else
+
+/*
+========================
+CL_LoadingFeed (PC side)
+
+A7 round 147 item 1b (user: "PC connect/dialog texts not same like android"):
+during a load the PC ConnectionProgress dialog stopped at its first status
+line ("Connecting to X...") for the WHOLE load, while Android rewrites the
+status every frame from CL_LoadingPhaseText() through Android_LoadingStatus.
+The PC feed hands the SAME sentence and the SAME combined percent to the
+SAME window through the new pfnConnectionProgress_StuffText door, so both
+platforms now show "Establishing connection..." / "Starting local game
+server..." / "Precaching resources..." / "Verifying and downloading
+resources..." at exactly the same points.
+
+Gates: a load must officially run (plaque latch, set by SCR_BeginLoading-
+Plaque and CL_PrecacheProgress - the Android side gates on its window being
+up) AND a menu window must be up (the load dialog is that window), so a
+browsing menu can never collect phase updates.
+*/
+static void CL_LoadingFeed( void )
+{
+	float pct;
+
+	if( !cls.disable_screen || !UI_IsVisible( ))
+		return;
+
+	pct = scr_loading.value;
+
+	// same boosted percent as the Android window feed: the bar keeps
+	// moving while a transfer runs, the phase line says what is going on
+	if( scr_download.value >= 0.0f && scr_download.value > pct )
+		pct = scr_download.value;
+
+	UI_ConnectionProgress_StuffText( bound( 0.0f, pct * 0.01f, 1.0f ),
+		CL_LoadingPhaseText( ));
+}
 #endif // XASH_ANDROID
 
 /*
@@ -3988,6 +4031,11 @@ static void CL_PrecacheProgress( int done, int total )
 		// from the resource callback (Android_LoadingStatus is a no-op when
 		// the window is down)
 		Android_LoadingStatus( CL_LoadingPhaseText(), scr_loading.value );
+#else
+		// A7 round 147 item 1b: same blocking-stretch push on PC - the
+		// phase line moves with every resource even though no host frame
+		// runs the per-frame feed yet (direct call, no command queue)
+		CL_LoadingFeed();
 #endif // XASH_ANDROID
 
 		// build 90: never lift the plaque latch for this redraw — lifting it
@@ -4501,12 +4549,13 @@ Host_ClientFrame
 */
 void Host_ClientFrame( void )
 {
-#if XASH_ANDROID
-	// A7 build 97: keep the platform loading window fed (status, bar,
-	// transfer block) and take it down when the signon completed
+// A7 build 97: keep the platform loading window fed (status, bar,
+	// transfer block) and take it down when the signon completed.
+	// A7 round 147 item 1b: the call is now shared - the PC branch of
+	// CL_LoadingFeed pushes the same phase sentence + percent into the
+	// ConnectionProgress dialog every frame (android branch unchanged)
 	if( cls.initialized )
 		CL_LoadingFeed();
-#endif // XASH_ANDROID
 
 	// if client is not active, do nothing
 	if( !cls.initialized ) return;

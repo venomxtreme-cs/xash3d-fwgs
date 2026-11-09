@@ -929,6 +929,28 @@ void SCR_UpdateScreen( void )
 
 	if( !V_PreRender( )) return;
 
+	// A7 build 147 (round 147 item 1, user: "Windows still black screen in
+	// loading area ... start game, been black, show loading, return to
+	// black again ... also in map changed servers"): EVERY frame that is
+	// presented must be fully covered by something opaque, or the swap
+	// hands the screen a buffer that was never written this frame and the
+	// user sees the undefined (black) contents. The 3D world only writes
+	// pixels when it actually renders - V_RenderView bails before a single
+	// vertex when cl.video_prepped is false (fresh level in
+	// CL_RegisterResources, mid-changelevel on a server) and the UI/menu
+	// covers the screen only when it is fully open - so those stretches used
+	// to present black between the loading dialog and the first world frame,
+	// exactly the Android behavior the Java loading window is there to
+	// prevent. Paint the same never-black 0x2A3140 -> 0x14181F gradient
+	// under everything as the frame's background; everything else on top
+	// (World / plaque / loading dialog / console / menu) draws over it.
+	if( cls.state != ca_cinematic && ( cls.state != ca_active || !cl.video_prepped
+		|| ( !ui_renderworld.value && UI_IsVisible() && !cl.background )))
+	{
+		ref.dllFuncs.R_Set2DMode( true ); // R_BeginFrame left 2D on; re-assert
+		SCR_DrawBackdropGradient();
+	}
+
 	switch( cls.state )
 	{
 	case ca_disconnected:

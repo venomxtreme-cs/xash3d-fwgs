@@ -292,6 +292,17 @@ void UI_ConnectionProgress_ParseServerInfo( const char *server )
 	}
 }
 
+// A7 round 147 item 1b: the same phase feed Android gets through
+// Android_LoadingStatus, delivered to the PC ConnectionProgress dialog.
+// NULL-guarded: a menu.dll older than this engine simply skips the feed
+void UI_ConnectionProgress_StuffText( float flProgress, const char *pszText )
+{
+	if( gameui.dllFuncs2.pfnConnectionProgress_StuffText )
+	{
+		gameui.dllFuncs2.pfnConnectionProgress_StuffText( flProgress, pszText );
+	}
+}
+
 static void GAME_EXPORT UI_DrawLogo( const char *filename, float x, float y, float width, float height )
 {
 	movie_state_t	*cin_state;

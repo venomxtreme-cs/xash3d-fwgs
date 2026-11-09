@@ -253,6 +253,12 @@ typedef struct
 	void (*pfnConnectionProgress_Connect)( const char *server ); // NULL for local server
 	void (*pfnConnectionProgress_ChangeLevel)( void );
 	void (*pfnConnectionProgress_ParseServerInfo)( const char *server );
+	// A7 round 147 item 1b (user: "PC dialog texts not same like android"):
+	// the per-frame load-phase feed - PC copy of the Android loadingStatus
+	// push (cl_main CL_LoadingPhaseText). APPENDED so older menu DLLs keep
+	// their field layout; the engine zero-memsets the table first and NULL-
+	// guards every call, so a stale menu.dll without this entry just skips.
+	void (*pfnConnectionProgress_StuffText)( float flProgress, const char *pszText );
 } UI_EXTENDED_FUNCTIONS;
 
 typedef int (*MENUAPI)( UI_FUNCTIONS *pFunctionTable, ui_enginefuncs_t* engfuncs, ui_globalvars_t *pGlobals );
