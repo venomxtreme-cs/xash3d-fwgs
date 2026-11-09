@@ -273,12 +273,11 @@ static void R_InitVideoModes( void )
 
 	if( modes <= 0 )
 	{
-		const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode( display_index );
-
-		if( dm )
+		SDL_DisplayMode dm;
+		if( SDL_GetDesktopDisplayMode( display_index, &dm ) == 0 )
 		{
-			fb_w = dm->w;
-			fb_h = dm->h;
+			fb_w = dm.w;
+			fb_h = dm.h;
 		}
 
 		if( fb_w < VID_MIN_WIDTH || fb_h < VID_MIN_HEIGHT )
