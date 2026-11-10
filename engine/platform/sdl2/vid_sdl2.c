@@ -28,6 +28,7 @@ GNU General Public License for more details.
 
 #if XASH_ANDROID
 #include <android/native_window.h>
+#include <ctype.h>
 #endif // XASH_ANDROID
 
 static vidmode_t *vidmodes = NULL;
@@ -98,6 +99,109 @@ static qboolean VID_AndroidApplySurfaceResolution( int w, int h )
 static qboolean VID_AndroidScaleActive( void )
 {
 	return s_android_w > 0 && ( s_android_w != s_android_native_w || s_android_h != s_android_native_h );
+}
+
+// A7 build 153 (round 152, user: "that's not real screen resolution, it
+// just change hud_scale"): REAL panel modes from XashActivity's JNI
+// getDisplayModes ("WxH@R;WxH@R...", deduped to distinct sizes). With >= 2
+// distinct panel sizes the Video-modes picker lists THEM and a pick goes
+// through Android_SetPreferredDisplayMode (preferredDisplayModeId) - the
+// panel itself switches, the surface follows with a normal RESIZED event,
+// and the pixel density really changes. A single-size device keeps the
+// build-152 buffer ladder. The buffer-geometry path is unreachable on
+// real-mode devices: a fractional stale-config row would only distort.
+// The query is lazy + once: the FIRST VID_SetScreenResolution (window
+// creation, boot config apply) runs BEFORE R_InitVideoModes, and a
+// persisted real mode must be applied through the panel at boot too.
+static int s_android_real_w[16], s_android_real_h[16], s_android_real_rows;
+static qboolean s_android_panel_queried = false;
+
+static void VID_AndroidQueryPanelModes( void )
+{
+	char list[1024];
+
+	if( s_android_panel_queried )
+		return;
+
+	s_android_panel_queried = true;
+
+	Android_GetDisplayModes( list, sizeof( list ));
+
+	if( list[0] )
+		VID_AndroidParsePanelModes( list );
+}
+
+static qboolean VID_AndroidRealMode( int w, int h )
+{
+	int i;
+
+	for( i = 0; i < s_android_real_rows; i++ )
+	{
+		if( s_android_real_w[i] == w && s_android_real_h[i] == h )
+			return true;
+	}
+
+	return false;
+}
+
+static void VID_AndroidParsePanelModes( const char *list )
+{
+	const char *p = list;
+	int rows = 0;
+
+	s_android_real_rows = 0;
+
+	while( *p && rows < ( int )ARRAYSIZE( s_android_real_w ))
+	{
+		int w = 0, h = 0;
+
+		while( isdigit(( unsigned char )*p ))
+			w = w * 10 + ( *p++ - '0' );
+
+		if( *p == 'x' )
+		{
+			p++;
+
+			while( isdigit(( unsigned char )*p ))
+				h = h * 10 + ( *p++ - '0' );
+
+			while( *p && *p != ';' )
+				p++;
+
+			if( *p == ';' )
+				p++;
+
+			// one entry per DISTINCT size - the refresh rate is picked
+			// Java-side (closest to the mode the panel is running)
+			if( w > 0 && h > 0 )
+			{
+				int j;
+
+				for( j = 0; j < rows; j++ )
+				{
+					if( s_android_real_w[j] == w && s_android_real_h[j] == h )
+						break;
+				}
+
+				if( j == rows )
+				{
+					s_android_real_w[rows] = w;
+					s_android_real_h[rows] = h;
+					rows++;
+				}
+			}
+		}
+		else
+		{
+			while( *p && *p != ';' )
+				p++;
+
+			if( *p == ';' )
+				p++;
+		}
+	}
+
+	s_android_real_rows = rows;
 }
 #endif // XASH_ANDROID
 
@@ -323,6 +427,77 @@ vidmode_t *R_GetVideoMode( int num )
 static void R_InitVideoModes( void )
 {
 	int display_index = 0;
+
+#if XASH_ANDROID
+	// A7 build 153 (round 152, user: "that's not real screen resolution, it
+	// just change hud_scale"): the table now prefers the panel's REAL
+	// display modes (XashActivity JNI list, >= 2 distinct sizes) - picking
+	// one switches the panel itself (preferredDisplayModeId), which is what
+	// "screen resolution" means on a phone. The build-152 fraction ladder
+	// stays ONLY for devices that expose a single panel size (their only
+	// real mode is the panel; the ladder then still saves GPU fill as a
+	// render-scale).
+	{
+		int real_rows;
+
+		num_vidmodes = 0;
+
+		VID_AndroidQueryPanelModes( );
+		real_rows = s_android_real_rows;
+
+		if( real_rows >= 2 )
+		{
+			// REAL resolution table. The panel's CURRENT size goes first so
+			// the picker highlights what is actually running; the rest keep
+			// the list order the panel reported.
+			int order[ARRAYSIZE( s_android_real_w )];
+			int rows = 0, i, native_idx = -1;
+
+			vidmodes = Mem_Malloc( host.mempool, sizeof( vidmodes[0] ) * real_rows );
+
+			for( i = 0; i < real_rows; i++ )
+			{
+				if( s_android_real_w[i] == s_android_native_w && s_android_real_h[i] == s_android_native_h )
+				{
+					native_idx = i;
+					break;
+				}
+			}
+
+			if( native_idx >= 0 )
+				order[rows++] = native_idx;
+
+			for( i = 0; i < real_rows; i++ )
+			{
+				if( i == native_idx )
+					continue;
+
+				order[rows++] = i;
+			}
+
+			for( i = 0; i < rows; i++ )
+			{
+				char buf[MAX_VA_STRING];
+
+				vidmodes[i].width = s_android_real_w[order[i]];
+				vidmodes[i].height = s_android_real_h[order[i]];
+				Q_snprintf( buf, sizeof( buf ), "%ix%i", vidmodes[i].width, vidmodes[i].height );
+				vidmodes[i].desc = copystring( buf );
+			}
+
+			num_vidmodes = rows;
+
+			Con_Printf( "[A7] build153: android panel modes %d rows\n", num_vidmodes );
+
+			(void)display_index;
+			return;
+		}
+
+		s_android_real_rows = 0;
+		// single-size panel: the build-152 fraction ladder below is the
+		// whole table (see its comment)
+	}
+#endif // XASH_ANDROID
 
 #if XASH_ANDROID
 	// A7 build 152 (round 151, user: "add feature screen resolution for
@@ -983,6 +1158,42 @@ static rserr_t VID_SetScreenResolution( int width, int height, window_mode_t win
 		// the untouched panel size otherwise
 		out_width = native_w;
 		out_height = native_h;
+
+		// A7 build 153: with >= 2 REAL panel modes the picker only offers
+		// real sizes and a pick switches the PANEL (Display.Mode via
+		// preferredDisplayModeId) - never the buffer geometry (a fractional
+		// size would only distort over a differently-shaped surface). The
+		// query is lazy (see VID_AndroidQueryPanelModes) so a persisted real
+		// mode from the config is applied through the panel at boot too.
+		// The panel switch reports itself through a real RESIZED event with
+		// the NEW panel size, which VID_SaveWindowSize records on its own.
+		VID_AndroidQueryPanelModes( );
+
+		if( s_android_real_rows >= 2 )
+		{
+			if( VID_AndroidRealMode( width, height ))
+			{
+				// Java is idempotent ("already at" -> true, no attribute
+				// write), so this is safe for the native row as well
+				if( Android_SetPreferredDisplayMode( width, height ))
+				{
+					// drop any buffer scale so the recreate-catch in
+					// VID_SaveWindowSize cannot reapply it over the new
+					// panel; the panel switch rescales everything itself
+					s_android_w = s_android_h = 0;
+					out_width = width;
+					out_height = height;
+					Con_Printf( "build153: panel mode %dx%d applied\n", width, height );
+				}
+			}
+
+			VID_SaveWindowSize( out_width, out_height );
+
+			// set icon that could've been lost after changing modes
+			VID_SetWindowIcon( host.hWnd );
+
+			return rserr_ok;
+		}
 
 		if( width == s_android_native_w && height == s_android_native_h )
 		{

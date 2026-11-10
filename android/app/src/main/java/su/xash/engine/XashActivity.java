@@ -17,6 +17,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.hardware.display.DisplayManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,6 +25,7 @@ import android.os.Environment;
 import android.provider.Settings.Secure;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -47,6 +49,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class XashActivity extends SDLActivity {
 	private boolean mUseVolumeKeys;
@@ -145,6 +149,88 @@ public class XashActivity extends SDLActivity {
 
 	private String loadAndroidID() {
 		return getSharedPreferences("xash_preferences", MODE_PRIVATE).getString("xash_id", "");
+	}
+
+	// ---------------------------------------------------------------------
+	// A7 build 153: REAL screen resolution - panel display-mode switching.
+	// The build-152 render-buffer ladder was rejected by the user ("that's
+	// not real screen resolution, it just change hud_scale"): it resized the
+	// GL surface buffer, which the proportional HUD/menu scale absorbs, so
+	// nothing visibly changed. These two JNI methods expose the panel's
+	// ACTUAL display modes (Display.Mode, API 23+): the engine lists them
+	// for the Video-modes picker and applies the chosen one through
+	// WindowManager.LayoutParams.preferredDisplayModeId - the PANEL itself
+	// switches (QHD/FHD panels, refresh-rate variants), the game surface
+	// follows through a normal surfaceChanged and the pixel density really
+	// changes. Devices exposing a single resolution keep the build-152
+	// render-scale ladder as their fallback (engine decision).
+	// ---------------------------------------------------------------------
+	public String getDisplayModes() {
+		try {
+			if (Build.VERSION.SDK_INT < 23)
+				return "";
+			DisplayManager dm = (DisplayManager)getSystemService(Context.DISPLAY_SERVICE);
+			Display display = dm.getDisplay(Display.DEFAULT_DISPLAY);
+			StringBuilder sb = new StringBuilder();
+			for (Display.Mode m : display.getSupportedModes()) {
+				if (sb.length() > 0) sb.append(';');
+				sb.append(m.getPhysicalWidth()).append('x')
+				  .append(m.getPhysicalHeight()).append('@')
+				  .append(m.getRefreshRate());
+			}
+			Log.i(TAG, "build153: supported display modes: " + sb);
+			return sb.toString();
+		} catch (Throwable t) {
+			Log.w(TAG, "build153: getDisplayModes failed: " + t);
+			return "";
+		}
+	}
+
+	// Engine thread -> setAttributes MUST run on the UI thread, so hop with
+	// runOnUiThread and latch the result back synchronously.
+	public boolean setPreferredDisplayMode(final int w, final int h) {
+		try {
+			if (Build.VERSION.SDK_INT < 23)
+				return false;
+			final boolean[] ok = new boolean[1];
+			final CountDownLatch latch = new CountDownLatch(1);
+			runOnUiThread(new Runnable() {
+				@Override public void run() {
+					try {
+						DisplayManager dm = (DisplayManager)getSystemService(Context.DISPLAY_SERVICE);
+						Display display = dm.getDisplay(Display.DEFAULT_DISPLAY);
+						float curRate = display.getMode().getRefreshRate();
+						Display.Mode best = null;
+						for (Display.Mode m : display.getSupportedModes()) {
+							if (m.getPhysicalWidth() != w || m.getPhysicalHeight() != h)
+								continue;
+							if (best == null || Math.abs(m.getRefreshRate() - curRate) < Math.abs(best.getRefreshRate() - curRate))
+								best = m;
+						}
+						if (best == null) {
+							Log.w(TAG, "build153: no panel mode matches " + w + "x" + h);
+						} else if (best.getModeId() == display.getMode().getModeId()) {
+							Log.i(TAG, "build153: panel already at " + w + "x" + h + "@" + best.getRefreshRate());
+							ok[0] = true;
+						} else {
+							WindowManager.LayoutParams lp = getWindow().getAttributes();
+							lp.preferredDisplayModeId = best.getModeId();
+							getWindow().setAttributes(lp);
+							Log.i(TAG, "build153: panel mode -> " + w + "x" + h + "@" + best.getRefreshRate() + " (id " + best.getModeId() + ")");
+							ok[0] = true;
+						}
+					} catch (Throwable t) {
+						Log.w(TAG, "build153: setPreferredDisplayMode failed: " + t);
+					}
+					latch.countDown();
+				}
+			});
+			latch.await(2, TimeUnit.SECONDS);
+			return ok[0];
+		} catch (Throwable t) {
+			Log.w(TAG, "build153: setPreferredDisplayMode failed: " + t);
+			return false;
+		}
 	}
 
 	// ---------------------------------------------------------------------

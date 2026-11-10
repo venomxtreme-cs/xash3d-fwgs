@@ -103,6 +103,12 @@ void Android_Init( void );
 void Android_RegisterCommands( void ); // A7: "steamfriends" WebView screen
 void *Android_GetNativeObject( const char *name );
 void Android_GetWindowInsets( float insets[4] );
+// A7 build 153: REAL screen resolution - panel display-mode switching
+// (XashActivity.getDisplayModes / setPreferredDisplayMode, Display.Mode
+// API 23+). list = "WxH@R;WxH@R..." for the Video-modes picker, set hops
+// to the UI thread inside Java and returns whether the panel took the mode
+void Android_GetDisplayModes( char *out, size_t size );
+qboolean Android_SetPreferredDisplayMode( int w, int h );
 int Android_GetKeyboardHeight( void );
 void Android_Shutdown( void );
 // A7 build 97: full-screen platform loading window (logo + status +
