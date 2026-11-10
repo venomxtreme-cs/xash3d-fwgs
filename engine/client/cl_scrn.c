@@ -689,10 +689,44 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 SCR_EndLoadingPlaque
 ================
 */
+// A7 build 150 (round 149 item 2, user: "black screen it only appears
+// temporarily when loading"): taking the Java loading window down at the
+// canonical end-of-load instant is still one step too early - the first
+// post-load world frame is not presented yet, so the reveal can expose the
+// surface for the frames the world still needs to start drawing = the
+// residual TEMPORARY black flash. The gameplay-start exits arm the defer
+// here (SCR_DeferLoadingWindowHide); SCR_EndLoadingPlaque then keeps the
+// window up and SCR_UpdateScreen takes it down on the first frame that
+// actually drew the world. Every other exit (disconnect, cancel, watchdog)
+// is never armed and still hides immediately.
+static qboolean s_r150_loadinghide_defer = false;
+
+qboolean SCR_DeferLoadingWindowHide( void )
+{
+#if XASH_ANDROID
+	if( Android_LoadingShown( ))
+	{
+		s_r150_loadinghide_defer = true;
+		Con_Printf( "[A7] build150: loading window hide deferred to first world frame\n" );
+		return true;
+	}
+#endif // XASH_ANDROID
+	return false;
+}
+
 void SCR_EndLoadingPlaque( void )
 {
 	cls.disable_screen = 0.0f;
 	Con_ClearNotify();
+
+	// A7 build 150 (round 149 item 1, user: "touch buttons are not working
+	// when i start game it show then it been hiding"): a load officially
+	// ends here with NO client touch menu open - any clientonly / _menu_*
+	// state the previous session left latched (chooseteam/buy/cmd cfg menu
+	// open across the load, mainui CClientWindow Hide() miss) is stale and
+	// would hide every main gameplay button forever. Same class of stale
+	// state the build-144 key_dest belts already clean on the load path.
+	Touch_CleanStaleClientMenu();
 
 	// A7 build 93: close the GameUI loading dialog that
 	// SCR_BeginLoadingPlaque/CL_PrecacheResources raised. HandleDisconnect
@@ -711,7 +745,11 @@ void SCR_EndLoadingPlaque( void )
 	// A7 build 112: this is THE "load is over" point (signon complete,
 	// disconnect, abort) - also take the platform loading window down
 	// here so no overlay can ever outlive the load, whatever raised it.
-	Android_LoadingHide();
+	// A7 build 150: unless the gameplay-start exit armed the defer, in
+	// which case SCR_UpdateScreen hides it on the first frame that
+	// actually drew the world.
+	if( !s_r150_loadinghide_defer )
+		Android_LoadingHide();
 #endif // XASH_ANDROID
 //	SNDDMA_UnlockSound();
 }
@@ -972,6 +1010,25 @@ void SCR_UpdateScreen( void )
 		Host_Error( "%s: bad cls.state\n", __func__ );
 		break;
 	}
+
+#if XASH_ANDROID
+	// A7 build 150 (round 149 item 2, user: "black screen it only appears
+	// temporarily when loading"): fire the deferred loading-window hide.
+	// The world has just been drawn into the buffer that is about to be
+	// presented, so taking the Java window down NOW can never expose a
+	// black surface. A session that left the game before any world frame
+	// hides immediately; a changelevel that went straight into the next
+	// load keeps the defer armed so the NEW load gets the same
+	// first-world-frame treatment.
+	if( s_r150_loadinghide_defer )
+	{
+		if(( cls.state == ca_active && cl.video_prepped ) || cls.state == ca_disconnected )
+		{
+			s_r150_loadinghide_defer = false;
+			Android_LoadingHide();
+		}
+	}
+#endif // XASH_ANDROID
 
 	// during changelevel we might have a few frames when we have nothing to draw
 	// (assuming levelshots are off) and drawing 2d on top of nothing or cleared screen

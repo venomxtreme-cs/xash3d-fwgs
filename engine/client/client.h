@@ -973,6 +973,10 @@ void SCR_VidInit( void );
 void SCR_TileClear( void );
 void SCR_DirtyScreen( void );
 void SCR_EndLoadingPlaque( void );
+// A7 build 150 (round 149 item 2): arm the deferred Java loading-window
+// hide (returns true when armed, i.e. the window is currently shown and
+// its takedown moved to the first frame that drew the world)
+qboolean SCR_DeferLoadingWindowHide( void );
 // A7 build 146 (round 146 item 1): never-black backdrop (the Android
 // loading window's 0xFF2A3140 -> 0xFF14181F fallback gradient)
 void SCR_DrawBackdropGradient( void );

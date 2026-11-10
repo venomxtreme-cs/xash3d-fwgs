@@ -546,6 +546,15 @@ void CL_SignonReply( connprotocol_t proto )
 			Mem_PrintStats();
 		break;
 	case 2:
+		// A7 build 150 (round 149 item 2, user: "black screen it only
+		// appears temporarily when loading"): this is the one end-of-load
+		// that leads into gameplay - arm the deferred loading-window hide
+		// so the window comes down only on the first frame that actually
+		// drew the world, never on a not-yet-rendered surface in between
+		// (cls.state is still ca_connected here; the defer is armed
+		// explicitly, not inferred). Every other exit (disconnect, cancel,
+		// watchdog) is never armed and still hides immediately.
+		SCR_DeferLoadingWindowHide();
 		SCR_EndLoadingPlaque();
 		if( cl.proxy_redirect && !cls.spectator )
 			CL_Disconnect();
@@ -3855,13 +3864,20 @@ static void CL_LoadingFeed( void )
 		if( cls.disable_screen )
 		{
 			Con_Printf( "[A7] build144: signon with latch - ending load canonically\n" );
+			// A7 build 150 (round 149 item 2): arm the first-world-frame
+			// defer BEFORE the canonical close so the Java window never
+			// drops on a frame the world has not drawn yet
+			SCR_DeferLoadingWindowHide();
 			SCR_EndLoadingPlaque();
 		}
 		else
 		{
 			if( Android_LoadingShown( ))
 				Con_Printf( "[A7] loading: signon complete, hiding overlay\n" );
-			Android_LoadingHide();
+			// A7 build 150 (round 149 item 2): same defer on the no-latch
+			// path - hide immediately only when there is nothing to defer
+			if( !SCR_DeferLoadingWindowHide())
+				Android_LoadingHide();
 		}
 
 		// belt: with the load over, key_dest parked on an EMPTY menu

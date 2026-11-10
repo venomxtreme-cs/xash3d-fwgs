@@ -641,6 +641,47 @@ static void Touch_SetClientOnly_f( void )
 	Touch_SetClientOnly( Q_atoi( Cmd_Argv( 1 )));
 }
 
+/*
+=================
+Touch_CleanStaleClientMenu
+
+A7 build 150 (round 149 item 1, user: "touch buttons are not working when
+i start game it show then it been hiding"): a client touch menu
+(chooseteam/buy/cmd cfg with touch_setclientonly 1, the mainui
+CClientWindow, the spectator menu) is only dismissed through its own
+_erase_frame alias or Touch_CloseMenu(); any path that misses them - a
+menu left open across a map load, a mainui stack Hide() miss, ESC on a
+cfg menu - strands clientonly=1, and Touch_IsVisible then hides EVERY
+non-TOUCH_FL_CLIENT button, so the main gameplay buttons never come back.
+Same class of stale state the build-144 key_dest belts already clean on
+the load path: a load officially ends with no client touch menu open, so
+drop the latched flag and the stale _menu_* frame with it. Touch_Set-
+ClientOnly(0) is deliberately NOT reused here - it routes through
+Touch_DisableEdit_f and may write the touch config mid-load-end; this
+belt only resets the state, mirroring Touch_SetClientOnly's own restore.
+=================
+*/
+void Touch_CleanStaleClientMenu( void )
+{
+	if( !touch.initialized )
+		return;
+
+	// stale _menu_* frame buttons from a client touch menu that was never
+	// dismissed through its own alias / Touch_CloseMenu still draw over
+	// the game even with clientonly=0 - remove them unconditionally
+	Touch_RemoveButton( "_menu_*", true );
+
+	if( !touch.clientonly )
+		return;
+
+	Con_Printf( "[A7] build150: stale touch clientonly dropped at end of load\n" );
+	touch.clientonly = false;
+	touch.resize_finger = touch.move_finger = touch.look_finger = touch.wheel_finger = -1;
+	touch.forward = touch.side = 0;
+	Platform_SetCursorType( dc_none );
+	IN_ActivateMouse();
+}
+
 static void Touch_ReleaseStick( touch_button_t *button )
 {
 	if( !FBitSet( button->flags, TOUCH_FL_STICK ) || button->type != touch_joy )
@@ -1650,6 +1691,39 @@ void Touch_Draw( void )
 
 	if( cls.key_dest != key_game && !touch_in_menu.value )
 		return;
+
+	// A7 build 150 (round 149 item 1): self-heal for the same latched
+	// clientonly outside the load path - a client menu that closed without
+	// restoring the flag leaves clientonly=1 with ZERO visible client
+	// buttons while the game owns the input again; that is a dead client
+	// menu by definition, so restore the main gameplay buttons here. A
+	// live menu always has its own TOUCH_FL_CLIENT buttons drawn (every
+	// unprivileged touch_addbutton auto-adds the flag), and while a mainui
+	// window holds key_menu this draw pass never runs.
+	if( touch.clientonly )
+	{
+		touch_button_t *b;
+		qboolean anyclient = false;
+
+		for( b = touch.list_user.first; b; b = b->next )
+		{
+			if( FBitSet( b->flags, TOUCH_FL_CLIENT ) && !FBitSet( b->flags, TOUCH_FL_HIDE ))
+			{
+				anyclient = true;
+				break;
+			}
+		}
+
+		if( !anyclient )
+		{
+			Con_Printf( "[A7] build150: clientonly with no client buttons - main touch buttons restored\n" );
+			touch.clientonly = false;
+			touch.resize_finger = touch.move_finger = touch.look_finger = touch.wheel_finger = -1;
+			touch.forward = touch.side = 0;
+			Platform_SetCursorType( dc_none );
+			IN_ActivateMouse();
+		}
+	}
 
 	if( cls.state == ca_cinematic )
 		return;
