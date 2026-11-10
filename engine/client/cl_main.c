@@ -3884,9 +3884,17 @@ static void CL_LoadingFeed( void )
 		// draws nothing at all (UI_UpdateMenu needs a window, touch
 		// refuses everything outside key_game) - hand input back to the
 		// game so a stale key_menu can never strand him on a black screen
-		if( !cls.disable_screen && cls.key_dest == key_menu && !UI_IsVisible( ))
+		// A7 build 151 (round 150, user: "i can't click choose team" on a
+		// Zombie-Escape server): UI_IsVisible() only sees the main menu
+		// stack, so this check ran EVERY frame in gameplay and yanked
+		// key_menu out from under live mainui client windows (the team/
+		// buy/class menus CClientWindow::Show opens with key_menu +
+		// touch_setclientonly 1) - the menu kept drawing but touch input
+		// no longer reached it. Skip while a client touch menu latches
+		// the state; the menu's own Hide() hands key_dest back.
+		if( !cls.disable_screen && !Touch_ClientOnlyActive() && cls.key_dest == key_menu && !UI_IsVisible( ))
 		{
-			Con_Printf( "[A7] build144: empty menu key_dest handed back to game\n" );
+			Con_Printf( "[A7] build151: empty menu key_dest handed back to game\n" );
 			Key_SetKeyDest( key_game );
 		}
 

@@ -71,6 +71,7 @@ typedef enum
 static inline void Touch_Draw( void ) { }
 static inline void Touch_SetClientOnly( byte state ) { }
 static inline void Touch_CleanStaleClientMenu( void ) { }
+static inline qboolean Touch_ClientOnlyActive( void ) { return false; }
 static inline void Touch_RemoveButton( const char *name, qboolean privileged ) { }
 static inline void Touch_HideButtons( const char *name, unsigned char hide, qboolean privileged ) { }
 static inline void Touch_AddClientButton( const char *name, const char *texture, const char *command, float x1, float y1, float x2, float y2, byte *color, int round, float aspect, int flags ) { }
@@ -88,6 +89,7 @@ static inline void Touch_NotifyResize( void ) { }
 void Touch_Draw( void );
 void Touch_SetClientOnly( byte state );
 void Touch_CleanStaleClientMenu( void );
+qboolean Touch_ClientOnlyActive( void );
 void Touch_RemoveButton( const char *name, qboolean privileged );
 void Touch_HideButtons( const char *name, unsigned char hide, qboolean privileged );
 void Touch_AddClientButton( const char *name, const char *texture, const char *command, float x1, float y1, float x2, float y2, byte *color, int round, float aspect, int flags );

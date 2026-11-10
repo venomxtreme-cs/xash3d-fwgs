@@ -666,6 +666,24 @@ void Touch_CleanStaleClientMenu( void )
 	if( !touch.initialized )
 		return;
 
+	// A7 build 151 (round 150, user: "i can't click choose team" on a
+	// Zombie-Escape server): a LIVE mainui client window - the team/buy/
+	// class menus the server pushes at join with cl_oldtouchmenus=0 -
+	// holds key_menu and latches clientonly through CClientWindow::Show
+	// but adds no _menu_* buttons of its own. A cfg touch menu in the
+	// same state still carries its _menu_* buttons, so the presence of
+	// the buttons tells a stale cfg frame from a live mainui menu; in the
+	// latter case leave the whole state alone, the window's own Hide()
+	// (or the build-144 belt, now guarded against clientonly) restores
+	// the game. Stale cfg menus and anything at key_game still get the
+	// build-150 cleanup below.
+	if( touch.clientonly && cls.key_dest == key_menu &&
+		!Touch_FindFirst( &touch.list_user, "_menu_*", true ))
+	{
+		Con_Printf( "[A7] build151: live mainui client menu kept across load end\n" );
+		return;
+	}
+
 	// stale _menu_* frame buttons from a client touch menu that was never
 	// dismissed through its own alias / Touch_CloseMenu still draw over
 	// the game even with clientonly=0 - remove them unconditionally
@@ -680,6 +698,23 @@ void Touch_CleanStaleClientMenu( void )
 	touch.forward = touch.side = 0;
 	Platform_SetCursorType( dc_none );
 	IN_ActivateMouse();
+}
+
+/*
+=================
+Touch_ClientOnlyActive
+
+A7 build 151 (round 150): the load-end key_dest belts in CL_LoadingFeed
+need to know that a client touch menu is holding the input state - the
+mainui CClientWindow::Show latches clientonly and sets key_menu, and the
+belt's UI_IsVisible() only sees the main menu stack, not the client one.
+Without this guard the belt handed key_dest back to the game every frame
+while such a menu was open, leaving it drawn but unreachable.
+=================
+*/
+qboolean Touch_ClientOnlyActive( void )
+{
+	return touch.clientonly;
 }
 
 static void Touch_ReleaseStick( touch_button_t *button )
@@ -1700,7 +1735,17 @@ void Touch_Draw( void )
 	// live menu always has its own TOUCH_FL_CLIENT buttons drawn (every
 	// unprivileged touch_addbutton auto-adds the flag), and while a mainui
 	// window holds key_menu this draw pass never runs.
-	if( touch.clientonly )
+	// A7 build 151 (round 150, user: "i can't click choose team" on a
+	// Zombie-Escape server): the second half of that old comment is only
+	// true when touch_in_menu is off - the heal itself ran under key_menu
+	// too. Worse, the mainui client windows (team/buy/class menus,
+	// CClientWindow::Show) latch clientonly WITHOUT adding any
+	// TOUCH_FL_CLIENT button, so the heal used to strip the state those
+	// menus stand on the moment the build-144 key_dest belt handed input
+	// back to the game. The heal is a key_game cleanup: with the mainui
+	// window holding key_menu the flag stays up and the menu stays
+	// clickable through the menu-mouse path.
+	if( touch.clientonly && cls.key_dest == key_game )
 	{
 		touch_button_t *b;
 		qboolean anyclient = false;
