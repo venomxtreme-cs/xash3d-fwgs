@@ -116,34 +116,6 @@ static qboolean VID_AndroidScaleActive( void )
 static int s_android_real_w[16], s_android_real_h[16], s_android_real_rows;
 static qboolean s_android_panel_queried = false;
 
-static void VID_AndroidQueryPanelModes( void )
-{
-	char list[1024];
-
-	if( s_android_panel_queried )
-		return;
-
-	s_android_panel_queried = true;
-
-	Android_GetDisplayModes( list, sizeof( list ));
-
-	if( list[0] )
-		VID_AndroidParsePanelModes( list );
-}
-
-static qboolean VID_AndroidRealMode( int w, int h )
-{
-	int i;
-
-	for( i = 0; i < s_android_real_rows; i++ )
-	{
-		if( s_android_real_w[i] == w && s_android_real_h[i] == h )
-			return true;
-	}
-
-	return false;
-}
-
 static void VID_AndroidParsePanelModes( const char *list )
 {
 	const char *p = list;
@@ -202,6 +174,34 @@ static void VID_AndroidParsePanelModes( const char *list )
 	}
 
 	s_android_real_rows = rows;
+}
+
+static void VID_AndroidQueryPanelModes( void )
+{
+	char list[1024];
+
+	if( s_android_panel_queried )
+		return;
+
+	s_android_panel_queried = true;
+
+	Android_GetDisplayModes( list, sizeof( list ));
+
+	if( list[0] )
+		VID_AndroidParsePanelModes( list );
+}
+
+static qboolean VID_AndroidRealMode( int w, int h )
+{
+	int i;
+
+	for( i = 0; i < s_android_real_rows; i++ )
+	{
+		if( s_android_real_w[i] == w && s_android_real_h[i] == h )
+			return true;
+	}
+
+	return false;
 }
 #endif // XASH_ANDROID
 

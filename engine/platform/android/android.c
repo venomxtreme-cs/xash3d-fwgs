@@ -191,69 +191,6 @@ void Android_GetWindowInsets( float insets[4] )
 
 /*
 ========================
-Android_GetDisplayModes
-Android_SetPreferredDisplayMode
-
-A7 build 153 (round 152, user: "that's not real screen resolution, it just
-change hud_scale"): REAL panel resolution switching. The build-152 buffer
-ladder only resized the GL surface buffer and the proportional HUD scale
-absorbed it. These wrap XashActivity.getDisplayModes / setPreferredDisplayMode
-(Display.Mode + preferredDisplayModeId, API 23+): the engine lists the
-panel's actual modes for the Video-modes picker and applies the chosen one -
-the panel itself switches and the surface follows with a normal
-surfaceChanged. vid_sdl2.c consumes them.
-========================
-*/
-static qboolean g_vidmode_method_missing_logged = false;
-
-void Android_GetDisplayModes( char *out, size_t size )
-{
-	struct android_loading_call_s c;
-	jstring jstr;
-	const char *str;
-
-	out[0] = '\0';
-
-	if( !Android_JniBegin( &c, "vidmode", "getDisplayModes", "()Ljava/lang/String;", &g_vidmode_method_missing_logged ))
-		return;
-
-	jstr = (*c.env)->CallObjectMethod( c.env, c.activity, c.mid );
-
-	if( !jstr || (*c.env)->ExceptionCheck( c.env ))
-	{
-		(*c.env)->ExceptionClear( c.env );
-		Android_LoadingEnd( &c );
-		return;
-	}
-
-	str = (*c.env)->GetStringUTFChars( c.env, jstr, NULL );
-
-	if( str )
-	{
-		Q_strncpy( out, str, size );
-		(*c.env)->ReleaseStringUTFChars( c.env, jstr, str );
-	}
-
-	(*c.env)->DeleteLocalRef( c.env, jstr );
-	Android_LoadingEnd( &c );
-}
-
-qboolean Android_SetPreferredDisplayMode( int w, int h )
-{
-	struct android_loading_call_s c;
-	jboolean ok;
-
-	if( !Android_JniBegin( &c, "vidmode", "setPreferredDisplayMode", "(II)Z", &g_vidmode_method_missing_logged ))
-		return false;
-
-	ok = (*c.env)->CallBooleanMethod( c.env, c.activity, c.mid, (jint)w, (jint)h );
-	Android_LoadingEnd( &c );
-
-	return ok != JNI_FALSE;
-}
-
-/*
-========================
 Android_SteamFriends_f
 
 A7: "steamfriends" - open the Steam friends WebView on top of the running
@@ -374,6 +311,69 @@ static qboolean Android_JniBegin( struct android_loading_call_s *c, const char *
 static qboolean Android_LoadingBegin( struct android_loading_call_s *c, const char *name, const char *sig )
 {
 	return Android_JniBegin( c, "loading", name, sig, &g_loading_method_missing_logged );
+}
+
+/*
+========================
+Android_GetDisplayModes
+Android_SetPreferredDisplayMode
+
+A7 build 153 (round 152, user: "that's not real screen resolution, it just
+change hud_scale"): REAL panel resolution switching. The build-152 buffer
+ladder only resized the GL surface buffer and the proportional HUD scale
+absorbed it. These wrap XashActivity.getDisplayModes / setPreferredDisplayMode
+(Display.Mode + preferredDisplayModeId, API 23+): the engine lists the
+panel's actual modes for the Video-modes picker and applies the chosen one -
+the panel itself switches and the surface follows with a normal
+surfaceChanged. vid_sdl2.c consumes them.
+========================
+*/
+static qboolean g_vidmode_method_missing_logged = false;
+
+void Android_GetDisplayModes( char *out, size_t size )
+{
+	struct android_loading_call_s c;
+	jstring jstr;
+	const char *str;
+
+	out[0] = '\0';
+
+	if( !Android_JniBegin( &c, "vidmode", "getDisplayModes", "()Ljava/lang/String;", &g_vidmode_method_missing_logged ))
+		return;
+
+	jstr = (*c.env)->CallObjectMethod( c.env, c.activity, c.mid );
+
+	if( !jstr || (*c.env)->ExceptionCheck( c.env ))
+	{
+		(*c.env)->ExceptionClear( c.env );
+		Android_LoadingEnd( &c );
+		return;
+	}
+
+	str = (*c.env)->GetStringUTFChars( c.env, jstr, NULL );
+
+	if( str )
+	{
+		Q_strncpy( out, str, size );
+		(*c.env)->ReleaseStringUTFChars( c.env, jstr, str );
+	}
+
+	(*c.env)->DeleteLocalRef( c.env, jstr );
+	Android_LoadingEnd( &c );
+}
+
+qboolean Android_SetPreferredDisplayMode( int w, int h )
+{
+	struct android_loading_call_s c;
+	jboolean ok;
+
+	if( !Android_JniBegin( &c, "vidmode", "setPreferredDisplayMode", "(II)Z", &g_vidmode_method_missing_logged ))
+		return false;
+
+	ok = (*c.env)->CallBooleanMethod( c.env, c.activity, c.mid, (jint)w, (jint)h );
+	Android_LoadingEnd( &c );
+
+	return ok != JNI_FALSE;
 }
 
 // A7 build 98: is the platform overlay actually up? one source of truth
