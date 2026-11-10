@@ -222,6 +222,12 @@ def build(bld):
 		]
 	else: # POSIX
 		libs += ['M', 'RT', 'PTHREAD', 'ASOUND', 'HAIKU', 'MAGX', 'LOG', 'SOCKET']
+		if bld.env.DEST_OS == 'android':
+			# A7 build 152 (round 151): libandroid for
+			# ANativeWindow_setBuffersGeometry - the Android surface-scale
+			# resolution feature in vid_sdl2.c (LIB_ANDROID is defined by the
+			# root wscript's conf.check_cc(lib='android'))
+			libs += ['ANDROID']
 		libs += get_frameworks(bld.env)
 		if not bld.env.STATIC:
 			libs += ['DL']
