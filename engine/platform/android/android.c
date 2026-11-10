@@ -315,6 +315,17 @@ static qboolean Android_LoadingBegin( struct android_loading_call_s *c, const ch
 
 /*
 ========================
+static void Android_LoadingEnd( struct android_loading_call_s *c )
+{
+	if( (*c->env)->ExceptionCheck( c->env ))
+		(*c->env)->ExceptionClear( c->env );
+
+	if( c->cls )
+		(*c->env)->DeleteLocalRef( c->env, c->cls );
+	if( c->activity )
+		(*c->env)->DeleteLocalRef( c->env, c->activity );
+}
+
 Android_GetDisplayModes
 Android_SetPreferredDisplayMode
 
@@ -382,17 +393,6 @@ qboolean Android_SetPreferredDisplayMode( int w, int h )
 qboolean Android_LoadingShown( void )
 {
 	return g_loading_shown;
-}
-
-static void Android_LoadingEnd( struct android_loading_call_s *c )
-{
-	if( (*c->env)->ExceptionCheck( c->env ))
-		(*c->env)->ExceptionClear( c->env );
-
-	if( c->cls )
-		(*c->env)->DeleteLocalRef( c->env, c->cls );
-	if( c->activity )
-		(*c->env)->DeleteLocalRef( c->env, c->activity );
 }
 
 void Android_LoadingShow( const char *serveraddr )
