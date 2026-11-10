@@ -313,8 +313,6 @@ static qboolean Android_LoadingBegin( struct android_loading_call_s *c, const ch
 	return Android_JniBegin( c, "loading", name, sig, &g_loading_method_missing_logged );
 }
 
-/*
-========================
 static void Android_LoadingEnd( struct android_loading_call_s *c )
 {
 	if( (*c->env)->ExceptionCheck( c->env ))
@@ -326,6 +324,8 @@ static void Android_LoadingEnd( struct android_loading_call_s *c )
 		(*c->env)->DeleteLocalRef( c->env, c->activity );
 }
 
+/*
+========================
 Android_GetDisplayModes
 Android_SetPreferredDisplayMode
 
