@@ -545,6 +545,11 @@ def configure(conf):
 
 		conf.check_cc(lib='dl')
 		conf.check_cc(lib='log')
+		# A7 build 152 (round 151): libandroid for
+		# ANativeWindow_setBuffersGeometry - the Android surface-scale
+		# resolution feature in vid_sdl2.c changes the GL surface buffer
+		# size, SurfaceFlinger keeps scaling it fullscreen
+		conf.check_cc(lib='android')
 		if not conf.options.ANDROID_OPTS:
 			# if we're compiling on device itself
 			conf.check_cc(lib='m')

@@ -26,6 +26,10 @@ GNU General Public License for more details.
 #include <vrtld.h>
 #endif // XASH_PSVITA
 
+#if XASH_ANDROID
+#include <android/native_window.h>
+#endif // XASH_ANDROID
+
 static vidmode_t *vidmodes = NULL;
 static int num_vidmodes = 0;
 static void GL_SetupAttributes( void );
@@ -34,6 +38,69 @@ static struct
 {
 	int prev_width, prev_height;
 } sdlState = { 640, 480 };
+
+#if XASH_ANDROID
+// A7 build 152 (round 151, user: "add feature screen resolution for android,
+// it doesn't have"): the Android window IS the panel and every SDL size call
+// on it is a no-op, so the Video-modes picker had nothing to act on - the
+// build-147 native fallback listed a single row and vid_setmode changed
+// nothing. The surface BUFFER size is the moving part:
+// ANativeWindow_setBuffersGeometry swaps it while SurfaceFlinger keeps
+// scaling the smaller buffer over the whole panel (aspect-preserving rows)
+// and the engine already carries a window/<->render split for it
+// (R_SaveVideoMode's render_w/render_h, the HiDPI path). The picker works
+// through the regular vid_setmode flow; the buffer geometry survives no
+// surface teardown, so a recreate restore is caught in VID_SaveWindowSize
+// and reapplied. s_android_native_* is the panel size seen at window setup,
+// before any buffers-geometry call - SDL's window struct only ever moves
+// from the Java surfaceChanged path, which reports the panel.
+static int s_android_w, s_android_h; // last applied buffer geometry, 0 = native
+static int s_android_native_w, s_android_native_h;
+
+static qboolean VID_AndroidGetWindow( ANativeWindow **out )
+{
+	SDL_SysWMinfo wminfo;
+
+	SDL_VERSION( &wminfo.version );
+
+	if( !host.hWnd || !SDL_GetWindowWMInfo( host.hWnd, &wminfo ))
+		return false;
+
+	if( wminfo.subsystem != SDL_SYSWM_ANDROID || !wminfo.info.android.window )
+		return false;
+
+	*out = wminfo.info.android.window;
+	return true;
+}
+
+static qboolean VID_AndroidApplySurfaceResolution( int w, int h )
+{
+	ANativeWindow *window;
+
+	if( !VID_AndroidGetWindow( &window ))
+	{
+		Con_Printf( S_ERROR "build152: no ANativeWindow for render resolution %dx%d\n", w, h );
+		return false;
+	}
+
+	if( ANativeWindow_setBuffersGeometry( window, w, h, 0 ) < 0 )
+	{
+		Con_Printf( S_ERROR "build152: ANativeWindow_setBuffersGeometry %dx%d failed\n", w, h );
+		return false;
+	}
+
+	s_android_w = w;
+	s_android_h = h;
+	Con_Printf( "build152: android render resolution %dx%d applied\n", w, h );
+	return true;
+}
+
+static qboolean VID_AndroidScaleActive( void )
+{
+	return s_android_w > 0 && ( s_android_w != s_android_native_w || s_android_h != s_android_native_h );
+}
+#endif // XASH_ANDROID
+
 
 struct
 {
@@ -256,6 +323,76 @@ vidmode_t *R_GetVideoMode( int num )
 static void R_InitVideoModes( void )
 {
 	int display_index = 0;
+
+#if XASH_ANDROID
+	// A7 build 152 (round 151, user: "add feature screen resolution for
+	// android, it doesn't have"): SDL display-mode lists are meaningless on
+	// a phone - the panel is the only mode the OS gives, so the table
+	// collapsed to a single native row (build-147 fallback) and picking any
+	// ladder entry did nothing. Offer an aspect-preserving fraction ladder
+	// off the panel instead: every row is applied as a surface buffer size
+	// (see VID_SetScreenResolution) and SurfaceFlinger scales it back over
+	// the full screen, so 50% still fills the window - same picture, a
+	// quarter of the pixels. The panel row is always first so GetConfig
+	// highlights what is actually running.
+	{
+		const float ladder[] = { 1.0f, 0.75f, 0.5f, 0.375f, 0.25f };
+		const int native_w = s_android_native_w;
+		const int native_h = s_android_native_h;
+		int rows = 0;
+
+		num_vidmodes = 0;
+
+		if( native_w >= VID_MIN_WIDTH && native_h >= VID_MIN_HEIGHT )
+		{
+			vidmodes = Mem_Malloc( host.mempool, sizeof( vidmodes[0] ) * ARRAYSIZE( ladder ));
+
+			for( size_t i = 0; i < ARRAYSIZE( ladder ); i++ )
+			{
+				int w = ( int )( native_w * ladder[i] ) & ~1;
+				int h = ( int )( native_h * ladder[i] ) & ~1;
+				char buf[MAX_VA_STRING];
+				int j;
+
+				if( w < VID_MIN_WIDTH || h < VID_MIN_HEIGHT )
+					continue;
+
+				for( j = 0; j < rows; j++ )
+				{
+					if( w == vidmodes[j].width && h == vidmodes[j].height )
+						break;
+				}
+
+				if( j != rows )
+					continue;
+
+				vidmodes[rows].width = w;
+				vidmodes[rows].height = h;
+				Q_snprintf( buf, sizeof( buf ), "%ix%i", w, h );
+				vidmodes[rows].desc = copystring( buf );
+				rows++;
+			}
+
+			num_vidmodes = rows;
+		}
+
+		Con_Printf( "[A7] build152: android resolution ladder %d rows (native %dx%d)\n",
+			num_vidmodes, native_w, native_h );
+
+		if( num_vidmodes == 0 )
+		{
+			// extremely narrow panel: keep the mainui fallback belt alive
+			if( vidmodes )
+			{
+				Mem_Free( vidmodes );
+				vidmodes = NULL;
+			}
+		}
+
+		(void)display_index;
+		return;
+	}
+#endif // XASH_ANDROID
 
 	// A7 round 147 item 8 (user: "return + improve the Android screen-
 	// resolution picker (dev's xash remove it) on both platforms"): the
@@ -549,6 +686,49 @@ void VID_SaveWindowSize( int width, int height )
 	qboolean maximized = FBitSet( SDL_GetWindowFlags( host.hWnd ), SDL_WINDOW_MAXIMIZED );
 	int render_w = width, render_h = height;
 
+#if XASH_ANDROID
+	// A7 build 152: with a non-native surface scale latched the buffer (and
+	// only the buffer) is at the chosen render size - SDL can't see buffer
+	// geometry, so its own numbers are wrong while the override is live.
+	if( s_android_native_w && VID_AndroidScaleActive( ))
+	{
+		render_w = s_android_w;
+		render_h = s_android_h;
+
+		// a resize event carrying the PANEL size - the Java surface was
+		// recreated (pause/resume, rotation) and the buffer reset to native
+		// with it. Apply the scale again right away and save with the
+		// applied dims: the reapply never produces its own SDL event.
+		// The applied dims go into BOTH slots so window_width/height keep
+		// carrying the choice into the next session's config.
+		if( width == s_android_native_w && height == s_android_native_h )
+		{
+			Con_Printf( "build152: surface reset caught - render resolution %dx%d reapplied\n", render_w, render_h );
+
+			if( !VID_AndroidApplySurfaceResolution( render_w, render_h ))
+			{
+				// surface is gone or refused - fall through and let the
+				// native size stand until the next full mode change
+				s_android_w = s_android_h = 0;
+				VID_GetWindowSizeInPixels( host.hWnd, sw.renderer, &render_w, &render_h );
+				VID_SetDisplayTransform( &render_w, &render_h );
+				R_SaveVideoMode( width, height, render_w, render_h, maximized );
+				return;
+			}
+
+			render_w = s_android_w;
+			render_h = s_android_h;
+			VID_SetDisplayTransform( &render_w, &render_h );
+			R_SaveVideoMode( render_w, render_h, render_w, render_h, maximized );
+			return;
+		}
+
+		VID_SetDisplayTransform( &render_w, &render_h );
+		R_SaveVideoMode( width, height, render_w, render_h, maximized );
+		return;
+	}
+#endif // XASH_ANDROID
+
 	VID_GetWindowSizeInPixels( host.hWnd, sw.renderer, &render_w, &render_h );
 	VID_SetDisplayTransform( &render_w, &render_h );
 	R_SaveVideoMode( width, height, render_w, render_h, maximized );
@@ -771,6 +951,60 @@ static rserr_t VID_SetScreenResolution( int width, int height, window_mode_t win
 
 		break;
 	}
+
+#if XASH_ANDROID
+	// A7 build 152: on Android the window IS the panel - the SDL calls above
+	// all succeed without moving anything. The picker's requested size goes
+	// to the surface BUFFER instead (SurfaceFlinger scales it fullscreen);
+	// the out size below drives the engine's render/window split so VID's
+	// save path records exactly what was asked for. Native size is captured
+	// here while SDL's window struct still holds the panel (it only ever
+	// moves through the Java surfaceChanged path, which always reports the
+	// panel, never our buffer geometry).
+	{
+		int native_w, native_h;
+
+		SDL_GetWindowSize( host.hWnd, &native_w, &native_h );
+
+		if( !s_android_native_w && native_w >= VID_MIN_WIDTH && native_h >= VID_MIN_HEIGHT )
+		{
+			s_android_native_w = native_w;
+			s_android_native_h = native_h;
+		}
+		else if( native_w > s_android_native_w && native_h > s_android_native_h )
+		{
+			// a richer panel reading than the one we captured (multi-window
+			// started small etc) - the ladder and restore live off this
+			s_android_native_w = native_w;
+			s_android_native_h = native_h;
+		}
+
+		// out size: the requested size when the buffer call succeeds,
+		// the untouched panel size otherwise
+		out_width = native_w;
+		out_height = native_h;
+
+		if( width == s_android_native_w && height == s_android_native_h )
+		{
+			// restoring the panel: only when a scale is actually latched -
+			// idempotent otherwise
+			if( VID_AndroidScaleActive( ))
+				VID_AndroidApplySurfaceResolution( width, height );
+		}
+		else if( VID_AndroidApplySurfaceResolution( width, height ))
+		{
+			out_width = width;
+			out_height = height;
+		}
+
+		VID_SaveWindowSize( out_width, out_height );
+
+		// set icon that could've been lost after changing modes
+		VID_SetWindowIcon( host.hWnd );
+
+		return rserr_ok;
+	}
+#endif // XASH_ANDROID
 
 	SDL_GetWindowSize( host.hWnd, &out_width, &out_height );
 
