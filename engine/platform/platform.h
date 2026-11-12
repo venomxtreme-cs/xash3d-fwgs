@@ -109,6 +109,13 @@ void Android_GetWindowInsets( float insets[4] );
 // to the UI thread inside Java and returns whether the panel took the mode
 void Android_GetDisplayModes( char *out, size_t size );
 qboolean Android_SetPreferredDisplayMode( int w, int h );
+// A7 build 154 (user: "fix black screen in every way never show up again"):
+// swap-failure watchdog called from GL_SwapBuffers with the SDL swap
+// verdict; after a sustained streak (2 s in-game / 10 s behind the loading
+// overlay, 10 s cooldown, foreground only) it forces a full game-surface
+// recreate over JNI - the only cure for a dead EGL surface
+void Android_SwapWatchdog( double now, qboolean swap_failed );
+qboolean Android_RecreateGameSurface( void );
 int Android_GetKeyboardHeight( void );
 void Android_Shutdown( void );
 // A7 build 97: full-screen platform loading window (logo + status +

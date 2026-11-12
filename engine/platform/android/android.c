@@ -387,6 +387,83 @@ qboolean Android_SetPreferredDisplayMode( int w, int h )
 	return ok != JNI_FALSE;
 }
 
+/*
+========================
+Android_SwapWatchdog
+Android_RecreateGameSurface
+
+A7 build 154 (user: "fix black screen in every way never show up again"):
+a dead EGL surface (driver hiccup, an OS teardown that missed the Java
+callbacks, a display-mode switch gone wrong) makes EVERY swap fail while
+the engine keeps rendering into nothing - a black screen nothing else in
+the engine can see or fix. The watchdog runs from GL_SwapBuffers every
+frame with the swap verdict; after a sustained failure streak (foreground
+only, loading overlay exempt with its own longer limit, 10 s cooldown) it
+asks the activity to tear the game surface down and rebuild it - the full
+SDL surface lifecycle (surfaceDestroyed -> Created -> Changed) recreates
+the EGL surface and the resume is re-armed Java-side.
+========================
+*/
+void Android_SwapWatchdog( double now, qboolean swap_failed )
+{
+	static qboolean failing = false;
+	static double fail_since = 0.0;
+	static int fail_frames = 0;
+	static double last_recover = -100.0;
+	double limit;
+
+	if( !swap_failed )
+	{
+		failing = false;
+		fail_frames = 0;
+		return;
+	}
+
+	if( host.status != HOST_FRAME )
+		return;
+
+	if( !failing )
+	{
+		failing = true;
+		fail_since = now;
+		fail_frames = 0;
+	}
+
+	fail_frames++;
+
+	// a legit load keeps swaps failing for a stretch (overlay up) - give
+	// it a much longer leash than an in-game death
+	limit = Android_LoadingShown( ) ? 10.0 : 2.0;
+
+	if( now - fail_since >= limit && now - last_recover >= 10.0 )
+	{
+		Con_Printf( "[A7] build154: swap failed for %.1f s (%d swaps) - forcing game surface recreate\n",
+			now - fail_since, fail_frames );
+
+		last_recover = now;
+		failing = false;
+		fail_frames = 0;
+
+		Android_RecreateGameSurface( );
+	}
+}
+
+static qboolean g_surfrec_method_missing_logged = false;
+
+qboolean Android_RecreateGameSurface( void )
+{
+	struct android_loading_call_s c;
+	jboolean ok;
+
+	if( !Android_JniBegin( &c, "surfrec", "recreateGameSurface", "()Z", &g_surfrec_method_missing_logged ))
+		return false;
+
+	ok = (*c.env)->CallBooleanMethod( c.env, c.activity, c.mid );
+	Android_LoadingEnd( &c );
+
+	return ok != JNI_FALSE;
+}
+
 // A7 build 98: is the platform overlay actually up? one source of truth
 // (g_loading_shown) so the engine's per-frame auto-heal can re-show a
 // window that a missed call site never raised.

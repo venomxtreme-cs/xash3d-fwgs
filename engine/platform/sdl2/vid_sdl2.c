@@ -1453,8 +1453,24 @@ void GL_SwapBuffers( void )
 	// so it opens with loading art instead of sitting black on the desktop
 	VID_ShowWindowOnce();
 #endif // XASH_MOBILE_PLATFORM
+
+	// A7 build 154 ("black screen in every way - never show up again"):
+	// the swap is the ONE place that knows whether the picture is alive -
+	// a dead EGL surface (driver hiccup, a surface the OS tore down without
+	// a clean Java callback, our own display-mode switch gone wrong) makes
+	// every eglSwapBuffers fail while the engine keeps burning frames into
+	// nothing. SDL records the failure as its thread error; capture it.
+	SDL_ClearError( );
 	SDL_GL_SwapWindow( host.hWnd );
 	dt = Sys_DoubleTime() - t0;
+
+#if XASH_ANDROID
+	{
+		const char *swap_err = SDL_GetError( );
+
+		Android_SwapWatchdog( t0, swap_err && swap_err[0] != '\0' );
+	}
+#endif // XASH_ANDROID
 
 	if( s_sw_win_start == 0.0 )
 		s_sw_win_start = host.realtime;

@@ -234,6 +234,75 @@ public class XashActivity extends SDLActivity {
 	}
 
 	// ---------------------------------------------------------------------
+	// A7 build 154 (user: "fix black screen in every way never show up
+	// again"): the engine's swap-failure watchdog lands here after a
+	// sustained stretch of failing swaps while the game runs - a dead EGL
+	// surface (driver hiccup, an OS teardown that missed the Java
+	// callbacks, a panel-mode switch gone wrong). Nothing engine-side can
+	// see or fix it, so the full SDL surface lifecycle is replayed here:
+	// hiding the SDLSurface fires surfaceDestroyed -> PAUSED ->
+	// onNativeSurfaceDestroyed (EGL surface released), re-showing it fires
+	// surfaceCreated/Changed (EGL surface rebuilt) and the resume is
+	// re-armed - the same cycle that heals a background/foreground
+	// round-trip. Returns false only when there is no surface to recreate.
+	// ---------------------------------------------------------------------
+	public boolean recreateGameSurface() {
+		if (mSurface == null) {
+			Log.w(TAG, "build154: surface recreate refused - no SDLSurface");
+			return false;
+		}
+		runOnUiThread(new Runnable() {
+			@Override public void run() {
+				try {
+					Log.w(TAG, "build154: surface recreate forced (no picture for a sustained streak) - rebuilding game surface");
+					mSurface.setVisibility(View.INVISIBLE);
+					mSurface.postDelayed(new Runnable() {
+						@Override public void run() {
+							try {
+								mSurface.setVisibility(View.VISIBLE);
+								rearmSurfaceResume(0);
+							} catch (Throwable t) {
+								Log.w(TAG, "build154: surface re-show failed: " + t);
+							}
+						}
+					}, 120);
+				} catch (Throwable t) {
+					Log.w(TAG, "build154: surface recreate failed: " + t);
+				}
+			}
+		});
+		return true;
+	}
+
+	// Poll mIsSurfaceReady: handleNativeState() no-ops until the rebuilt
+	// surface has reported its size (surfaceChanged). ~25 * 120 ms of
+	// patience, then stop - the next watchdog pass tries again (10 s
+	// cooldown protects against a tight loop on a permanently dead panel).
+	private void rearmSurfaceResume(final int attempt) {
+		if (mSurface == null)
+			return;
+		if (mSurface.mIsSurfaceReady) {
+			Log.i(TAG, "build154: surface re-shown (resume re-armed)");
+			mNextNativeState = NativeState.RESUMED;
+			handleNativeState();
+			return;
+		}
+		if (attempt >= 25) {
+			Log.w(TAG, "build154: surface not ready after re-show - watchdog will retry");
+			return;
+		}
+		mSurface.postDelayed(new Runnable() {
+			@Override public void run() {
+				try {
+					rearmSurfaceResume(attempt + 1);
+				} catch (Throwable t) {
+					Log.w(TAG, "build154: surface re-arm failed: " + t);
+				}
+			}
+		}, 120);
+	}
+
+	// ---------------------------------------------------------------------
 	// A7 build 97: full-screen loading window
 	//
 	// The engine raises it from the loading plaque (connect, local server
